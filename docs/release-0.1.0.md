@@ -16,7 +16,7 @@ below; the source archives are the ones GitHub generates for the tag.
 | --- | --- | --- | --- |
 | `.deb` package | Debian / Ubuntu / Zorin, x86-64 | 3.3 MB | [pdf-rust_0.1.0_amd64.deb](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/pdf-rust_0.1.0_amd64.deb) |
 | Portable tarball | any Linux x86-64 (glibc ≥ 2.31) | 4.2 MB | [pdf-rust-0.1.0-linux-x86_64.tar.gz](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/pdf-rust-0.1.0-linux-x86_64.tar.gz) |
-| Checksums | — | 300 B | [SHA256SUMS.txt](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/SHA256SUMS.txt) |
+| Checksums | — | 196 B | [SHA256SUMS.txt](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/SHA256SUMS.txt) |
 | Source archive | — | 663 KB | [pdf-rust-0.1.0-src.tar.gz](https://github.com/ankitkumar131/pdf-rust/archive/refs/tags/v0.1.0.tar.gz) |
 
 ```bash

@@ -56,6 +56,10 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
   `../lib/pdf-rust/libpdfium.so` search path.
 * `--selftest` fails fast with the list of paths it tried when PDFium is missing
   (previously it waited two minutes and then reported only a timeout).
+* Release `v0.1.0` is published with the `.deb`, portable tarball and source
+  linked from the description; the binaries live in `downloads/v0.1.0/` inside the
+  tag because this environment cannot reach `uploads.github.com`, so
+  `gh release upload` fails (the script warns and continues).
 * PDF engine: 20-page and 1000-page documents, zoom 2×, 90° rotation, text
   extraction, search, outline, links, password-protected and corrupt files,
   rotated-copy export that provably leaves the original untouched.
