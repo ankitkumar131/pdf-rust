@@ -710,15 +710,19 @@ fn the_whole_session_comes_back_after_a_restart() {
         assert_eq!(app.sidebar.tab, pdf_rust::app::SidebarTab::Outline);
         assert!((app.settings.sidebar_width - 320.0).abs() < 0.5);
         assert!((app.window.w - 1100.0).abs() < 0.5);
-        // Simulate an unexpected exit: nothing is saved, the flag stays "dirty".
-        std::mem::forget(app);
+        // Simulate an unexpected exit: only `save_all` marks the session clean,
+        // so simply dropping the app leaves the flag set to "crashed".
+        drop(app);
     }
 
     // The next start knows the previous run did not shut down cleanly …
-    let mut app = app_with_db(&db_path);
-    assert!(app.recovered_session, "a crash is detected on the next start");
+    let mut previous = app_with_db(&db_path);
+    assert!(previous.recovered_session, "a crash is detected on the next start");
     // … and the tabs are still there (they were saved as they changed).
-    assert_eq!(app.restore_session(), 3);
+    assert_eq!(previous.restore_session(), 3);
+    // Close every handle before touching the files: Windows keeps a document
+    // locked while it is open, so the file can only be removed afterwards.
+    drop(previous);
     // A document that has disappeared is skipped instead of failing the restore.
     std::fs::remove_file(&names[1]).unwrap();
     let mut app = app_with_db(&db_path);
