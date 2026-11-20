@@ -320,7 +320,7 @@ macro_rules! declare_xlib {
                 Ok(Xlib {
                     $( $name: {
                         // SAFETY: the symbol has the documented Xlib signature.
-                        unsafe { lib.get(concat!(stringify!($name), "\0")) }
+                        unsafe { lib.get(stringify!($name)) }
                             .ok_or_else(|| format!("Xlib is missing {}", stringify!($name)))?
                     }, )*
                 })

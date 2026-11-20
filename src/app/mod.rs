@@ -11,20 +11,19 @@ pub mod dialogs;
 pub mod docview;
 pub mod layout;
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::db::{Database, DocumentRow, HighlightRow, ReadingMode, SessionRow, ZoomMode};
-use crate::doc::identity::{self, DocIdentity};
-use crate::geom::{Point, Rect, Size};
+use crate::db::{Database, DocumentRow, ReadingMode, SessionRow, ZoomMode};
+use crate::doc::identity;
+use crate::geom::{Rect, Size};
 use crate::pdf::{Command as PdfCommand, DocId, Engine, Event as PdfEvent, RenderKey};
 use crate::ui::theme::Metrics;
 use crate::ui::{Bitmap, Font, Input, Key, Theme, Ui, UiState};
 
 use commands::Command;
-use dialogs::{Dialogs, ErrorDialog, FileDialog, GotoDialog, PasswordDialog, ResumeDialog, ResumePolicy};
+use dialogs::{Dialogs, FileDialog, GotoDialog, PasswordDialog, ResumeDialog, ResumePolicy};
 use docview::{DocState, DocView, RotationScope, Selection};
 
 /// Bitmap cache budget per document (bytes). Total memory is bounded by the
@@ -242,6 +241,18 @@ pub enum DialogKind {
     Info,
 }
 
+/// A print job in progress: pages are rendered by the worker and handed to the
+/// platform print job one by one.
+pub struct PrintState {
+    pub job: crate::platform::print::PrintJob,
+    pub doc: DocId,
+    pub pages: Vec<u32>,
+    pub next: usize,
+    pub awaiting: Option<u32>,
+    pub scale_milli: u32,
+    pub caption: String,
+}
+
 /// Window regions computed from the current window size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Regions {
@@ -300,6 +311,10 @@ pub struct App {
     pub pending_initial_page: Option<u32>,
     /// Set while a print/export job is running.
     pub busy: Option<String>,
+    /// Active print job (Windows renders pages; Linux prints the file).
+    pub print: Option<PrintState>,
+    /// Rotated copy waiting to be printed once the export finishes.
+    pub pending_print: Option<PathBuf>,
     pub mouse_in_content: bool,
 }
 
@@ -349,6 +364,8 @@ impl App {
             page_field: Default::default(),
             pending_initial_page: None,
             busy: None,
+            print: None,
+            pending_print: None,
             mouse_in_content: false,
         }
     }
@@ -520,6 +537,9 @@ impl App {
                     bitmap,
                     millis,
                 } => {
+                    if self.print_consumed(id, &key, &bitmap) {
+                        // Page went to the printer; keep the cache warm too.
+                    }
                     if let Some(doc) = self.docs.iter_mut().find(|d| d.id == id) {
                         doc.pending_renders.remove(&key);
                         doc.last_render_ms = millis;
@@ -589,11 +609,26 @@ impl App {
                 PdfEvent::Exported { result, .. } => {
                     self.busy = None;
                     match result {
-                        Ok(path) => self.toast(
-                            ToastLevel::Info,
-                            format!("Saved a copy to {}", path),
-                        ),
-                        Err(e) => self.toast(ToastLevel::Error, format!("Export failed: {}", e)),
+                        Ok(path) => {
+                            let printing = self
+                                .pending_print
+                                .as_ref()
+                                .map(|p| p.to_string_lossy() == path)
+                                .unwrap_or(false);
+                            if printing {
+                                let title = self
+                                    .active_doc()
+                                    .map(|d| d.title.clone())
+                                    .unwrap_or_else(|| "document".to_string());
+                                self.start_print(std::path::Path::new(&path), &title);
+                            } else {
+                                self.toast(ToastLevel::Info, format!("Saved a copy to {}", path));
+                            }
+                        }
+                        Err(e) => {
+                            self.pending_print = None;
+                            self.toast(ToastLevel::Error, format!("Export failed: {}", e));
+                        }
                     }
                     self.redraw = true;
                 }
@@ -1192,19 +1227,150 @@ impl App {
         self.toast(ToastLevel::Info, "Exporting a rotated copy…");
     }
 
-    /// Prints through the platform print path (CUPS on Linux, GDI on Windows).
+    /// Prints the document. A user rotation is applied by exporting a rotated
+    /// copy first (the original file is never touched), then the copy is printed.
     pub fn print_document(&mut self) {
-        let Some(doc) = self.active_doc() else { return };
+        let viewport = self.content_rect().size();
+        let _ = viewport;
+        let Some(doc) = self.active_doc() else {
+            self.toast(ToastLevel::Warn, "Open a document first");
+            return;
+        };
         if !doc.is_ready() {
+            self.toast(ToastLevel::Warn, "The document is still loading");
             return;
         }
-        match crate::platform::print::print_pdf(
-            &doc.identity.path,
-            doc.session.rotation,
-            doc.rotation_scope == RotationScope::All,
-        ) {
-            Ok(message) => self.toast(ToastLevel::Info, message),
-            Err(e) => self.toast(ToastLevel::Error, format!("Printing failed: {}", e)),
+        let rotation = doc.session.rotation;
+        let all_pages = doc.rotation_scope == RotationScope::All;
+        let page_count = doc.page_count();
+        let current = doc.current_page();
+        let title = doc.title.clone();
+        let id = doc.id;
+        let path = doc.identity.path.clone();
+        if rotation != 0 {
+            let dest = std::env::temp_dir().join(format!(
+                "pdf-rust-print-{}-{}.pdf",
+                std::process::id(),
+                self.next_token
+            ));
+            let rotations: Vec<(u32, u16)> = if all_pages {
+                (0..page_count).map(|p| (p, rotation)).collect()
+            } else {
+                vec![(current, rotation)]
+            };
+            let token = self.take_token();
+            self.engine.send(PdfCommand::ExportRotated {
+                id,
+                rotations,
+                dest: dest.clone(),
+                token,
+            });
+            self.pending_print = Some(dest);
+            self.busy = Some("Preparing the print copy…".to_string());
+            self.toast(ToastLevel::Info, "Preparing a rotated copy for printing…");
+            return;
+        }
+        self.start_print(&path, &title);
+    }
+
+    /// Starts a print job for `path` (already in the right orientation).
+    fn start_print(&mut self, path: &std::path::Path, title: &str) {
+        self.pending_print = None;
+        let job = match crate::platform::print::PrintJob::start(path, title) {
+            Ok(job) => job,
+            Err(e) => {
+                self.busy = None;
+                self.toast(ToastLevel::Error, format!("Printing failed: {}", e));
+                return;
+            }
+        };
+        if !job.needs_pages() {
+            match job.finish() {
+                Ok(message) => self.toast(ToastLevel::Info, message),
+                Err(e) => self.toast(ToastLevel::Error, format!("Printing failed: {}", e)),
+            }
+            self.busy = None;
+            return;
+        }
+        let (Some(doc), scale) = (
+            self.docs.iter().find(|d| d.title == title),
+            job.scale().clamp(0.1, 8.0),
+        ) else {
+            self.busy = None;
+            self.toast(ToastLevel::Error, "The document was closed while printing");
+            return;
+        };
+        let doc_id = doc.id;
+        let pages: Vec<u32> = (0..doc.page_count()).collect();
+        let scale_milli = RenderKey::new(0, scale, 0).scale_milli;
+        self.print = Some(PrintState {
+            job,
+            doc: doc_id,
+            pages,
+            next: 0,
+            awaiting: None,
+            scale_milli,
+            caption: title.to_string(),
+        });
+        self.busy = Some(format!("Printing {}…", title));
+        self.print_pump();
+    }
+
+    /// Requests the next page image for the active print job.
+    fn print_pump(&mut self) {
+        let Some(print) = &mut self.print else { return };
+        if print.awaiting.is_some() {
+            return;
+        }
+        let Some(page) = print.pages.get(print.next).copied() else {
+            return;
+        };
+        let key = RenderKey {
+            page,
+            scale_milli: print.scale_milli,
+            rotation: 0,
+        };
+        print.awaiting = Some(page);
+        print.next += 1;
+        let id = print.doc;
+        self.engine.send(PdfCommand::Render { id, key });
+    }
+
+    /// Feeds a rendered page to the print job (returns true when consumed).
+    fn print_consumed(&mut self, id: DocId, key: &RenderKey, bitmap: &Arc<Bitmap>) -> bool {
+        let Some(print) = &mut self.print else {
+            return false;
+        };
+        if id != print.doc || key.scale_milli != print.scale_milli || print.awaiting != Some(key.page) {
+            return false;
+        }
+        print.awaiting = None;
+        if let Err(e) = print.job.page(bitmap) {
+            let print = self.print.take();
+            self.busy = None;
+            let caption = print.map(|p| p.caption).unwrap_or_default();
+            self.toast(ToastLevel::Error, format!("Printing {} failed: {}", caption, e));
+            return true;
+        }
+        if print.next >= print.pages.len() {
+            let print = self.print.take().expect("print job present");
+            match print.job.finish() {
+                Ok(message) => self.toast(ToastLevel::Info, message),
+                Err(e) => self.toast(ToastLevel::Error, format!("Printing failed: {}", e)),
+            }
+            self.busy = None;
+        } else {
+            self.print_pump();
+        }
+        true
+    }
+
+    /// Cancels an in-flight print job.
+    pub fn cancel_print(&mut self) {
+        if let Some(mut print) = self.print.take() {
+            print.awaiting = None;
+            self.toast(ToastLevel::Info, format!("Printing {} cancelled", print.caption));
+            self.busy = None;
         }
     }
 
@@ -1531,6 +1697,10 @@ impl App {
                     self.ui.focus = None;
                 }
             }
+        }
+
+        if input.key_pressed(Key::Escape) && self.print.is_some() {
+            self.cancel_print();
         }
 
         // Escape always closes the top-most modal first.

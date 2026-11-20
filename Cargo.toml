@@ -14,6 +14,11 @@ categories = ["gui", "multimedia"]
 # auditability, offline/reproducible builds).
 [dependencies]
 
+[features]
+# Type-checks the Win32 shell on a non-Windows host (`cargo check
+# --features win32-syntax-check`). Linking still only happens on Windows.
+win32-syntax-check = []
+
 [lib]
 name = "pdf_rust"
 path = "src/lib.rs"

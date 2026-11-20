@@ -10,7 +10,7 @@ pub mod print;
 #[cfg(target_os = "linux")]
 pub mod x11;
 
-#[cfg(windows)]
+#[cfg(any(windows, feature = "win32-syntax-check"))]
 pub mod win32;
 
 /// URL schemes we are willing to hand to the operating system.

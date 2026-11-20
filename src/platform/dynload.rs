@@ -35,7 +35,7 @@ mod imp {
     }
 
     pub fn sym(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
-        let c = std::ffi::CString::new(name).ok()?;
+        let c = std::ffi::CString::new(name.trim_end_matches('\0')).ok()?;
         // SAFETY: handle comes from dlopen.
         let p = unsafe { dlsym(handle, c.as_ptr()) };
         if p.is_null() {
@@ -71,7 +71,7 @@ mod imp {
     }
 
     pub fn sym(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
-        let mut bytes = name.as_bytes().to_vec();
+        let mut bytes = name.trim_end_matches('\0').as_bytes().to_vec();
         bytes.push(0);
         // SAFETY: NUL-terminated ASCII symbol name.
         let p = unsafe { GetProcAddress(handle, bytes.as_ptr()) };
