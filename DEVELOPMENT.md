@@ -39,7 +39,7 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
 
 ## Verified so far
 
-* `cargo test` — 111 unit + 3 CLI + 10 PDF engine + 17 viewer tests, all green,
+* `cargo test` — 113 unit + 3 CLI + 10 PDF engine + 18 viewer tests, all green,
   run in parallel against real PDFium 152.0.7934. Zero compiler warnings.
 * `cargo check --features win32-syntax-check` type-checks the Win32 shell and its
   GDI printing path on Linux; a deliberately broken line proves the feature really
@@ -72,12 +72,12 @@ each one is verified today:
 | A 20-page PDF opened on page 10 restores page 10 after closing and reopening | met | `reading_position_survives_restart`, `db::reopening_the_same_file_keeps_the_session`, `--page 10` + `session` row |
 | Restoration survives a full machine restart | met by construction | session rows are committed to SQLite (WAL, `synchronous=NORMAL`, autosave ≤2 s, `save_all()` on quit); a restart is indistinguishable from the process restart the tests perform |
 | Zoom and rotation persist | met | session row stores zoom mode/value, rotation and view mode; covered by `reading_position_survives_restart` and `settings_round_trip_through_the_database` |
-| Large PDFs read without excessive memory | met | 1000-page engine test; bounded cache (192 MB) + 8192 px/40 MP clamps; `--selftest` reports 17.8 MB peak on the 200-page benchmark |
+| Large PDFs read without excessive memory | met | 1000-page engine test; bounded cache (192 MB, never evicts the visible page) + 8192 px/40 MP clamps; `extended_reading_keeps_the_cache_bounded`; `--selftest` reports 17.8 MB peak on the 200-page benchmark |
 | Multiple PDFs open | met | tabs (`tabs_and_single_page_mode`), tab bar, drag & drop of a second file |
 | Windows installer and portable distribution work | **unverified** | NSIS + ZIP scripts are complete; needs one run on Windows (see limitations) |
 | Linux package works | met (packages built and inspected; install not performed here) | `.deb` built with `dpkg-deb`, AppDir runs in place (`AppRun --selftest`) |
 | Recognised as a PDF reader by both systems | met on Linux, scripted on Windows | `application/pdf` MIME + desktop entry + AppStream; Windows ProgID + `OpenWithProgids` + `Applications` entry |
-| Critical features have automated or documented manual tests | met | 141 automated tests plus the manual matrix in `docs/testing.md` |
+| Critical features have automated or documented manual tests | met | 144 automated tests plus the manual matrix in `docs/testing.md` |
 | Source pushed to the configured remote | met | fast-forward pushes to `origin` after every milestone |
 
 ## Known bugs / limitations

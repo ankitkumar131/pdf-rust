@@ -592,3 +592,61 @@ fn corrupt_pdf_is_reported_as_a_failed_document() {
     assert!(failed, "a corrupt file must end in the Failed state");
     assert!(app.dialogs.error.is_some());
 }
+
+/// Reading for a long time must not grow memory: the page cache is bounded by
+/// bytes and evicts what is no longer visible.
+#[test]
+fn extended_reading_keeps_the_cache_bounded() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-memory");
+    let path = build_pdf(&dir, 30);
+    let mut app = App::new(Engine::start(), None, None);
+    app.window = Size::new(1200.0, 900.0);
+    app.open_path(path, None);
+    let f = font();
+    let mut bmp = Bitmap::new(1200, 900);
+    assert!(pump(&mut app, &mut bmp, &f, |app| {
+        app.active_doc().map(|d| d.is_ready()).unwrap_or(false)
+    }));
+    // Zoom in so each page is a few megabytes: three of them already exceed the
+    // budget the test pins the cache to.
+    {
+        let viewport = app.content_rect().size();
+        let doc = app.active_doc_mut().unwrap();
+        doc.set_zoom(ZoomMode::Custom, 1.5, viewport);
+    }
+    app.active_doc_mut().unwrap().cache.set_limit(8 * 1024 * 1024);
+
+    let mut rendered = 0;
+    for _ in 0..30 {
+        app.frame(&press(Key::PageDown, false, false), &mut bmp, &f);
+        for _ in 0..6 {
+            app.tick(app.now());
+            app.frame(&input_none(), &mut bmp, &f);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let doc = app.active_doc().unwrap();
+        rendered = rendered.max(doc.cache.len());
+        assert!(
+            doc.cache.memory_bytes() <= doc.cache.limit_bytes(),
+            "cache grew to {} bytes with a {} byte budget",
+            doc.cache.memory_bytes(),
+            doc.cache.limit_bytes()
+        );
+    }
+    let doc = app.active_doc().unwrap();
+    assert_eq!(doc.current_page(), 29, "read to the last page");
+    assert!(!doc.cache.is_empty(), "the visible page stays cached");
+    assert!(
+        rendered < 30,
+        "old pages were evicted instead of piling up ({rendered} cached at once)"
+    );
+    // Going back re-renders instead of failing.
+    app.frame(&press(Key::Home, false, false), &mut bmp, &f);
+    assert!(pump(&mut app, &mut bmp, &f, |app| {
+        app.active_doc().map(|d| !d.cache.is_empty()).unwrap_or(false)
+    }));
+    assert_eq!(app.active_doc().unwrap().current_page(), 0);
+}

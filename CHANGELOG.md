@@ -82,6 +82,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   `scripts/bench.sh` wraps it.
 - Removed all compiler warnings (including the PDFium C names in the FFI table,
   now annotated instead of suppressed globally).
+- The page cache never evicts the page being displayed, even when one bitmap is
+  larger than the whole budget; `extended_reading_keeps_the_cache_bounded` and two
+  cache unit tests cover the bound.
 
 ### Documentation
 - `docs/architecture.md`, `docs/testing.md`, `docs/packaging.md`.

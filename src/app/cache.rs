@@ -40,12 +40,18 @@ impl PageCache {
     }
 
     pub fn set_limit(&mut self, limit_bytes: usize) {
-        self.limit_bytes = limit_bytes.max(32 * 1024 * 1024);
+        self.limit_bytes = limit_bytes.max(8 * 1024 * 1024);
         self.evict();
     }
 
     pub fn memory_bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// The effective byte budget (after clamping), so callers and tests can
+    /// assert against the same number the cache enforces.
+    pub fn limit_bytes(&self) -> usize {
+        self.limit_bytes
     }
 
     pub fn len(&self) -> usize {
@@ -141,19 +147,27 @@ impl PageCache {
     }
 
     fn evict(&mut self) {
-        while self.bytes > self.limit_bytes && !self.entries.is_empty() {
+        // Always keep the most recently used page, even if a single bitmap is
+        // bigger than the whole budget: evicting it would make the viewer
+        // re-render the page it is showing on every frame.
+        while self.bytes > self.limit_bytes && self.entries.len() > 1 {
+            let newest = self
+                .entries
+                .iter()
+                .max_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| *k);
             let victim = self
                 .entries
                 .iter()
                 .min_by_key(|(_, e)| e.last_used)
                 .map(|(k, _)| *k);
             match victim {
-                Some(key) => {
+                Some(key) if Some(key) != newest => {
                     if let Some(entry) = self.entries.remove(&key) {
                         self.bytes = self.bytes.saturating_sub(entry.bytes);
                     }
                 }
-                None => break,
+                _ => break,
             }
         }
     }
@@ -166,6 +180,32 @@ mod tests {
 
     fn bmp(w: u32, h: u32) -> Arc<Bitmap> {
         Arc::new(Bitmap::filled(w, h, Color::rgb(255, 255, 255)))
+    }
+
+    #[test]
+    fn respects_the_budget_and_keeps_the_visible_page() {
+        let mut cache = PageCache::new(8 * 1024 * 1024);
+        assert_eq!(cache.limit_bytes(), 8 * 1024 * 1024);
+        // 1000x700 = 2.8 MB per page, so at most three fit.
+        for page in 0..6 {
+            cache.insert(RenderKey::new(page, 1.0, 0), bmp(1000, 700));
+        }
+        assert!(cache.len() < 6, "old pages are evicted");
+        assert!(cache.memory_bytes() <= cache.limit_bytes());
+        assert!(
+            cache.get(&RenderKey::new(5, 1.0, 0)).is_some(),
+            "the page the user is looking at is never evicted"
+        );
+    }
+
+    #[test]
+    fn a_page_bigger_than_the_budget_is_still_kept() {
+        let mut cache = PageCache::new(8 * 1024 * 1024);
+        // 2000x2000 = 16 MB, twice the budget.
+        cache.insert(RenderKey::new(0, 1.0, 0), bmp(2000, 2000));
+        assert_eq!(cache.len(), 1, "evicting it would re-render every frame");
+        cache.insert(RenderKey::new(1, 1.0, 0), bmp(2000, 2000));
+        assert_eq!(cache.len(), 1, "the older page is dropped instead");
     }
 
     #[test]

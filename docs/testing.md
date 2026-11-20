@@ -15,10 +15,10 @@ cargo test --offline       # same, in a sandbox without crates.io access
 
 | Layer | Where | Count | What it proves |
 | --- | --- | --- | --- |
-| Unit tests | inline `#[cfg(test)]` in `src/` | 111 | geometry, hashing, PNG, font metrics, layout, zoom anchoring, cache eviction, session encoding, print scaling |
+| Unit tests | inline `#[cfg(test)]` in `src/` | 113 | geometry, hashing, PNG, font metrics, layout, zoom anchoring, cache eviction, session encoding, print scaling |
 | CLI tests | `src/main.rs` | 3 | argument parsing, defaults, `--stats`/`--selftest` acceptance |
 | Engine tests | `tests/pdf_engine.rs` | 10 | real PDFs through the PDFium worker |
-| Viewer tests | `tests/viewer.rs` | 17 | headless `App` behaviour end to end |
+| Viewer tests | `tests/viewer.rs` | 18 | headless `App` behaviour end to end |
 
 `gen_fixtures` is an extra test target containing only ignored tests: it writes
 the synthetic documents used for manual profiling (`cargo test --test
@@ -63,6 +63,10 @@ the first page is rendered, and returns the app. Tests then:
   (`highlight_round_trips_through_the_database`),
 * open several documents into tabs, switch between them and check that each keeps
   its own page (`tabs_and_single_page_mode`),
+* read 30 pages at 150 % zoom with the cache pinned to 8 MB and assert the budget
+  holds, old pages are evicted and the visible page is never dropped
+  (`extended_reading_keeps_the_cache_bounded`) — the memory-usage check the
+  specification asks for,
 * paint frames and check pixels (for example that the page content region is not
   uniform, that the selection overlay changes the frame, that the toast appears
   and expires).
