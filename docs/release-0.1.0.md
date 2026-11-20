@@ -9,20 +9,28 @@ and reading mode, per document, across restarts and reboots.
 
 ## Download
 
+Binaries are published in this tag under `downloads/v0.1.0/` and linked directly
+below; the source archives are the ones GitHub generates for the tag.
+
 | Artifact | Platform | Size | Direct download |
 | --- | --- | --- | --- |
-| `.deb` package | Debian / Ubuntu / Zorin, x86-64 | 3.3 MB | [pdf-rust_0.1.0_amd64.deb](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust_0.1.0_amd64.deb) |
-| Portable tarball | any Linux x86-64 (glibc ≥ 2.31) | 4.2 MB | [pdf-rust-0.1.0-linux-x86_64.tar.gz](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust-0.1.0-linux-x86_64.tar.gz) |
-| Source archive | — | 663 KB | [pdf-rust-0.1.0-src.tar.gz](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust-0.1.0-src.tar.gz) |
-| Checksums | — | 290 B | [SHA256SUMS.txt](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/SHA256SUMS.txt) |
+| `.deb` package | Debian / Ubuntu / Zorin, x86-64 | 3.3 MB | [pdf-rust_0.1.0_amd64.deb](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/pdf-rust_0.1.0_amd64.deb) |
+| Portable tarball | any Linux x86-64 (glibc ≥ 2.31) | 4.2 MB | [pdf-rust-0.1.0-linux-x86_64.tar.gz](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/pdf-rust-0.1.0-linux-x86_64.tar.gz) |
+| Checksums | — | 300 B | [SHA256SUMS.txt](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/SHA256SUMS.txt) |
+| Source archive | — | 663 KB | [pdf-rust-0.1.0-src.tar.gz](https://github.com/ankitkumar131/pdf-rust/archive/refs/tags/v0.1.0.tar.gz) |
 
 ```bash
 # verify what you downloaded
-wget -q https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/SHA256SUMS.txt
+curl -LO https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 ```
 
-PDFium (the renderer) is bundled in every package — nothing else to install.
+```
+8835e65ff147bb5a61faaeb6d2168ac2186815226dc1eecdf4be6959f91c92e0  pdf-rust_0.1.0_amd64.deb
+765a67538acf6d6cd81b9ccb0361c89cb2ade6ce18dc71dc428fd964b8f13d6b  pdf-rust-0.1.0-linux-x86_64.tar.gz
+```
+
+PDFium (the renderer) is bundled in both packages — nothing else to install.
 
 > **Windows:** the Windows build is produced on Windows, because it needs the
 > Windows resource compiler and `pdfium.dll`. Run

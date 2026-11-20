@@ -134,12 +134,24 @@ resource compiler still produces a working executable.
 
 ## Publishing a release
 
-`scripts/release.sh <version>` creates the annotated tag `v<version>`, pushes it
-and uploads `dist/*.deb`, `dist/*.tar.gz` and `dist/SHA256SUMS.txt` together with
-`docs/release-<version>.md` as the release body (`gh release create`). Prepare the
-notes file first: it contains the download table, so the asset URLs must exist
-before the release is published — build with `scripts/build-release.sh` and run
-`gh release view <tag>` afterwards to confirm every link resolves.
+`scripts/release.sh <version>` tags the current commit (`v<version>`), pushes the
+tag, and publishes a GitHub release whose body is `docs/release-<version>.md`. It
+then tries to attach `dist/*.deb`, `dist/*.tar.gz` and `dist/SHA256SUMS.txt` as
+release assets.
+
+Release-asset uploads use `uploads.github.com`, which is not reachable from every
+build environment. When that fails, the artifacts are published inside the tagged
+tree instead: `downloads/<version>/` holds the `.deb`, the portable tarball and
+`SHA256SUMS.txt`, and the release notes link to them with
+`https://github.com/<owner>/<repo>/raw/v<version>/downloads/<version>/<file>`.
+That keeps the download links stable and verifiable (they are checksummed files
+inside an immutable tag), at the cost of the binaries living in git history.
+
+```bash
+scripts/build-release.sh 0.1.0     # tests, build, deb, tarball, source, sums
+scripts/release.sh 0.1.0           # tag + push + gh release create
+gh release view v0.1.0 --json assets,url
+```
 
 The published release is
 [v0.1.0](https://github.com/ankitkumar131/pdf-rust/releases/tag/v0.1.0) with notes
