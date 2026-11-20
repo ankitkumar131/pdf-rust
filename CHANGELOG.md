@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.0] — 2026-11-20
+
+First tagged release: Linux `.deb`, portable tarball and source; Windows build
+scripts (installer + portable ZIP) are in the tree. Highlights: reading-position
+persistence with SHA-256 document identity, continuous/single-page reading with
+smooth scrolling, thumbnails/outline/search/recent, text selection and copy,
+highlights, printing, presentation mode, and a steady-state frame of ~1.6 ms on a
+200-page document. See the [release notes](docs/release-0.1.0.md).
+
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).

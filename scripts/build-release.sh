@@ -3,8 +3,9 @@
 #
 #   scripts/build-release.sh [version]
 #
-# Steps: offline tests, release build, Debian package, AppImage directory
-# (plus the image itself when appimagetool is installed) and SHA-256 sums.
+# Steps: offline tests, release build, Debian package, portable tarball, AppImage
+# directory (plus the image itself when appimagetool is installed), source
+# tarball and SHA-256 sums. Upload the result with scripts/release.sh.
 # Windows artifacts are produced on Windows with packaging/windows/build.ps1.
 set -euo pipefail
 
@@ -25,9 +26,15 @@ fi
 
 echo "==> linux packages ($version)"
 ./packaging/linux/build-deb.sh "$version"
+./packaging/linux/build-portable.sh "$version"
 ./packaging/linux/build-appimage.sh "$version" || true
 
-echo "==> checksums"
+echo "==> source tarball"
 mkdir -p dist
-(cd dist && sha256sum ./*.deb ./*.AppImage 2>/dev/null > SHA256SUMS.txt || true)
+git archive --format=tar.gz --prefix="pdf-rust-$version/" \
+  -o "dist/pdf-rust-$version-src.tar.gz" "${GIT_REF:-HEAD}"
+
+echo "==> checksums"
+(cd dist && sha256sum ./*.deb ./*.tar.gz ./*.AppImage 2>/dev/null > SHA256SUMS.txt || true)
+cat dist/SHA256SUMS.txt
 ls -l dist

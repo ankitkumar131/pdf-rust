@@ -9,10 +9,12 @@ generated. The rationale is in [ADR 0006](adr/0006-packaging.md).
 | Platform | Artifact | Built by | Contents |
 | --- | --- | --- | --- |
 | Linux | `dist/pdf-rust_<version>_amd64.deb` | `packaging/linux/build-deb.sh` | `/usr/bin/pdf-rust`, `/usr/lib/pdf-rust/libpdfium.so`, desktop entry, MIME+AppStream metadata, icon, docs, `postinst`/`postrm` hooks |
-| Linux | `dist/pdf-rust-<version>-x86_64.AppImage` | `packaging/linux/build-appimage.sh` | AppDir with `AppRun` (sets `LD_LIBRARY_PATH`), same binary and library |
+| Linux | `dist/pdf-rust-<version>-linux-x86_64.tar.gz` | `packaging/linux/build-portable.sh` | portable directory: executable, `libpdfium.so`, docs, `install-desktop.sh` |
+| Linux | `dist/pdf-rust-<version>-x86_64.AppImage` | `packaging/linux/build-appimage.sh` | AppDir with `AppRun` (sets `LD_LIBRARY_PATH`), same binary and library; needs `appimagetool` to finish the image |
 | Windows | `dist/pdf-rust-<version>-win64.zip` | `packaging/windows/build.ps1` | `pdf-rust.exe`, `pdfium.dll`, `README.md`, `CHANGELOG.md`, `LICENSE`, `pdf-rust.exe.manifest` |
 | Windows | `dist/pdf-rust-<version>-setup.exe` | `packaging/windows/build.ps1` + NSIS | installer with shortcuts, uninstaller and optional `.pdf` association |
-| any | `dist/SHA256SUMS.txt` | `scripts/build-release.sh` | checksums of the Linux artifacts |
+| any | `dist/pdf-rust-<version>-src.tar.gz` | `scripts/build-release.sh` (`git archive`) | source of the tagged commit |
+| any | `dist/SHA256SUMS.txt` | `scripts/build-release.sh` | checksums of the other artifacts |
 
 ### Sizes (Linux x86-64, release build, PDFium 152.0.7934)
 
@@ -21,6 +23,7 @@ generated. The rationale is in [ADR 0006](adr/0006-packaging.md).
 | `pdf-rust` executable (stripped, fat LTO) | 1.71 MB |
 | `libpdfium.so` | 7.62 MB |
 | `.deb` download | 3.3 MB |
+| portable `.tar.gz` | 4.2 MB |
 | `.deb` installed (`dpkg-deb -I` *Installed-Size*) | 9.1 MB |
 | AppDir (uncompressed, before squashfs) | 9.3 MB |
 
@@ -45,8 +48,11 @@ version stamp; without one the build still succeeds and prints a warning.
 ## Build
 
 ```bash
-# everything on Linux: tests, release build, deb, AppDir/AppImage, checksums
+# everything on Linux: tests, release build, deb, tarball, source, checksums
 scripts/build-release.sh                 # or: scripts/build-release.sh 0.2.0
+
+# upload the result as a GitHub release (tag + assets + notes)
+scripts/release.sh 0.1.0
 
 # individual pieces
 packaging/linux/build-deb.sh 0.1.0
@@ -125,6 +131,19 @@ documentation.
 object to the linker via `cargo:rustc-link-arg`. MSVC builds convert the `.res`
 with `cvtres`. Any failure is downgraded to a `cargo:warning` so a build without a
 resource compiler still produces a working executable.
+
+## Publishing a release
+
+`scripts/release.sh <version>` creates the annotated tag `v<version>`, pushes it
+and uploads `dist/*.deb`, `dist/*.tar.gz` and `dist/SHA256SUMS.txt` together with
+`docs/release-<version>.md` as the release body (`gh release create`). Prepare the
+notes file first: it contains the download table, so the asset URLs must exist
+before the release is published — build with `scripts/build-release.sh` and run
+`gh release view <tag>` afterwards to confirm every link resolves.
+
+The published release is
+[v0.1.0](https://github.com/ankitkumar131/pdf-rust/releases/tag/v0.1.0) with notes
+in [`docs/release-0.1.0.md`](release-0.1.0.md).
 
 ## Verifying a package
 

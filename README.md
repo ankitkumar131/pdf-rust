@@ -75,8 +75,11 @@ Release builds use fat LTO, one codegen unit, `panic=abort` and symbol stripping
 Prebuilt packages are produced by the scripts in [`packaging/`](packaging); see
 [`docs/packaging.md`](docs/packaging.md) for the full description.
 
-* **Linux** — `scripts/build-release.sh` (or the two scripts individually) builds
-  `dist/pdf-rust_<version>_amd64.deb` and an AppImage. The package installs
+* **Linux** — the newest release is downloadable from
+  [Releases](https://github.com/ankitkumar131/pdf-rust/releases/latest) (`.deb`,
+  portable tarball, source). Building locally: `scripts/build-release.sh` produces
+  `dist/pdf-rust_<version>_amd64.deb`, a portable tarball and the AppDir/AppImage.
+  The package installs
   `/usr/bin/pdf-rust`, ships PDFium in `/usr/lib/pdf-rust/`, registers
   `application/pdf` (desktop entry, MIME XML, AppStream metainfo, icon) and
   refreshes the caches from `postinst`.
