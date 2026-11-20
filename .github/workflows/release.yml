@@ -140,7 +140,7 @@ jobs:
 
       - name: Build and package (portable ZIP)
         shell: pwsh
-        run: ./packaging/windows/build.ps1 -SkipTests -SkipInstaller -PdfiumDll runtime/pdfium/pdfium.dll
+        run: ./packaging/windows/build.ps1 -SkipTests -SkipInstaller -RequireResources -PdfiumDll runtime/pdfium/pdfium.dll
 
       - name: Build the NSIS installer
         continue-on-error: true

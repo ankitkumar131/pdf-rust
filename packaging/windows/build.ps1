@@ -21,7 +21,10 @@ param(
     [string] $Version = "",
     [string] $PdfiumDll = "",
     [switch] $SkipTests,
-    [switch] $SkipInstaller
+    [switch] $SkipInstaller,
+    # Fail (instead of warning) when the icon/version resource is missing. CI uses
+    # this so a binary without an icon can never reach a release again.
+    [switch] $RequireResources
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,7 +73,8 @@ try {
     # means rc.exe/cvtres.exe were not found and the exe would show a generic icon.
     $versionInfo = (Get-Item $exe).VersionInfo
     if (-not $versionInfo.FileDescription) {
-        Write-Warning "pdf-rust.exe has no version resource: the icon and version stamp were not embedded (install the Windows SDK, or set PDFRUST_RESOURCE_COMPILER)"
+        $message = "pdf-rust.exe has no version resource: the icon and version stamp were not embedded (install the Windows SDK, or set PDFRUST_RESOURCE_COMPILER)"
+        if ($RequireResources) { throw $message } else { Write-Warning $message }
     } else {
         Write-Host "==> resources: $($versionInfo.FileDescription) $($versionInfo.FileVersion)"
     }
