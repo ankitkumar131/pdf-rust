@@ -39,7 +39,7 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
 
 ## Verified so far
 
-* `cargo test` — 113 unit + 3 CLI + 10 PDF engine + 18 viewer tests, all green,
+* `cargo test` — 114 unit + 3 CLI + 10 PDF engine + 19 viewer tests, all green,
   run in parallel against real PDFium 152.0.7934. Zero compiler warnings.
 * `cargo check --features win32-syntax-check` type-checks the Win32 shell and its
   GDI printing path on Linux; a deliberately broken line proves the feature really
@@ -77,7 +77,7 @@ each one is verified today:
 | Windows installer and portable distribution work | **unverified** | NSIS + ZIP scripts are complete; needs one run on Windows (see limitations) |
 | Linux package works | met (packages built and inspected; install not performed here) | `.deb` built with `dpkg-deb`, AppDir runs in place (`AppRun --selftest`) |
 | Recognised as a PDF reader by both systems | met on Linux, scripted on Windows | `application/pdf` MIME + desktop entry + AppStream; Windows ProgID + `OpenWithProgids` + `Applications` entry |
-| Critical features have automated or documented manual tests | met | 144 automated tests plus the manual matrix in `docs/testing.md` |
+| Critical features have automated or documented manual tests | met | 146 automated tests plus the manual matrix in `docs/testing.md` |
 | Source pushed to the configured remote | met | fast-forward pushes to `origin` after every milestone |
 
 ## Known bugs / limitations
