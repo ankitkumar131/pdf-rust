@@ -209,8 +209,13 @@ fn reading_position_survives_restart() {
         app.frame(&press(Key::End, false, false), &mut bmp, &f);
         assert_eq!(app.active_doc().unwrap().current_page(), 19);
         app.save_all();
-        let row = app.db.as_ref().unwrap().find_by_path(&path.to_string_lossy()).unwrap();
-        assert!(row.is_some(), "the document must be recorded");
+        // The database is keyed by the path the app records (absolute, and without
+        // the Windows verbatim prefix), never by the string that was passed in.
+        let stored = app.active_doc().unwrap().identity.path_string();
+        assert!(!stored.starts_with("\\\\?\\"), "no verbatim prefix in {stored}");
+        assert!(std::path::Path::new(&stored).is_absolute());
+        let row = app.db.as_ref().unwrap().find_by_path(&stored).unwrap();
+        assert!(row.is_some(), "the document must be recorded as {stored}");
         assert_eq!(row.unwrap().session.last_page, 20);
     }
 

@@ -402,7 +402,10 @@ impl App {
                 .unwrap_or(path)
         };
         // Already open? Just switch to it.
-        if let Some(index) = self.docs.iter().position(|d| d.identity.path == path) {
+        // Compare absolute paths so `./a.pdf`, `C:/x/a.pdf` and a path with `..`
+        // all land on the document that is already open.
+        let absolute = identity::canonical_path(&path);
+        if let Some(index) = self.docs.iter().position(|d| d.identity.path == absolute) {
             self.active = index;
             self.redraw = true;
             return;

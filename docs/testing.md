@@ -15,7 +15,7 @@ cargo test --offline       # same, in a sandbox without crates.io access
 
 | Layer | Where | Count | What it proves |
 | --- | --- | --- | --- |
-| Unit tests | inline `#[cfg(test)]` in `src/` | 115 | geometry, hashing, PNG, font metrics, layout, zoom anchoring, cache eviction, session encoding, print scaling |
+| Unit tests | inline `#[cfg(test)]` in `src/` | 116 | geometry, hashing, PNG, font metrics, layout, zoom anchoring, cache eviction, session encoding, print scaling |
 | CLI tests | `src/main.rs` | 3 | argument parsing, defaults, `--stats`/`--selftest` acceptance |
 | Engine tests | `tests/pdf_engine.rs` | 10 | real PDFs through the PDFium worker |
 | Viewer tests | `tests/viewer.rs` | 28 | headless `App` behaviour end to end |

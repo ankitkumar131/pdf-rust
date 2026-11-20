@@ -49,6 +49,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - Wheel messages are translated from screen to client coordinates before hit
   testing, and `WM_DPICHANGED` applies the suggested window rectangle instead of
   leaving a mis-sized window after a monitor change.
+- Documents are stored under their ordinary absolute path: `std::fs::canonicalize`
+  returns a verbatim path on Windows (`\\?\C:\...`), which is now stripped
+  before the path is written to the database or shown in the recent list. This was
+  the one Windows test failure in CI (`reading_position_survives_restart`), and it
+  also made the recent-documents list unreadable there.
 
 ### Added — Milestone 1: foundation
 - Cargo project with zero third-party dependencies and an optimised release

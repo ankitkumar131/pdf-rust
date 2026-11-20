@@ -10,9 +10,11 @@
 //! For files up to 128 KiB the whole content is hashed (so the head and tail do
 //! not overlap). Fingerprinting a 1 GB PDF therefore reads at most 128 KiB.
 //!
-//! The canonical path is stored alongside for display, "recent documents" and
-//! for a fast path when reopening the same file, but it is never used as the
-//! identity key.
+//! The absolute path is stored alongside for display, "recent documents" and for
+//! a fast path when reopening the same file, but it is never used as the identity
+//! key. On Windows the stored path has the verbatim (`\\?\`) prefix removed: the
+//! prefix is correct for file APIs but unreadable in the UI and it never matches a
+//! path the user or the shell hands us later.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -78,6 +80,31 @@ pub fn fingerprint(path: &Path) -> Result<String, String> {
     Ok(out)
 }
 
+/// Absolute path of `path` in the form the UI and the database use.
+///
+/// `std::fs::canonicalize` is used when it succeeds because it resolves `.`, `..`
+/// and symlinks. Windows returns a *verbatim* path (`\\?\C:\dir\file.pdf`) from
+/// it, which is stripped here: the prefix is valid in Win32 calls but it would
+/// show up in the UI, and a path stored with it never matches the plain path the
+/// shell passes in later.
+pub fn canonical_path(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    strip_verbatim(canonical)
+}
+
+/// Removes the Windows verbatim prefix: `\\?\C:\...` becomes `C:\...` and
+/// `\\?\UNC\server\share` becomes `\\server\share`. A no-op elsewhere.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        return PathBuf::from(format!("\\\\{}", rest));
+    }
+    if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
 /// Full identity of a document on disk.
 pub fn identify(path: &Path) -> Result<DocIdentity, String> {
     let meta = std::fs::metadata(path)
@@ -85,7 +112,7 @@ pub fn identify(path: &Path) -> Result<DocIdentity, String> {
     if meta.is_dir() {
         return Err(format!("{} is a folder, not a PDF document", path.display()));
     }
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = canonical_path(path);
     let display_name = canonical
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -170,6 +197,17 @@ mod tests {
         data[0] = b'X';
         let p3 = temp_file("h.pdf", &data);
         assert_eq!(fp1, fingerprint(&p3).unwrap());
+    }
+
+    #[test]
+    fn canonical_path_is_absolute_and_prefix_free() {
+        let path = temp_file("canon.pdf", b"%PDF-1.7 hello");
+        let canonical = canonical_path(&path);
+        assert!(canonical.is_absolute());
+        assert!(!canonical.to_string_lossy().starts_with("\\\\?\\"));
+        // A path that does not exist is returned as given (no panic, no escape).
+        let missing = PathBuf::from("definitely-not-here/../nope.pdf");
+        assert_eq!(canonical_path(&missing), missing);
     }
 
     #[test]

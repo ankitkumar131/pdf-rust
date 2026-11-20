@@ -39,7 +39,7 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
 
 ## Verified so far
 
-* `cargo test` — 115 unit + 3 CLI + 10 PDF engine + 28 viewer tests, all green,
+* `cargo test` — 116 unit + 3 CLI + 10 PDF engine + 28 viewer tests, all green,
   run in parallel against real PDFium 152.0.7934. Zero compiler warnings.
 * `cargo check --features win32-syntax-check` type-checks the Win32 shell and its
   GDI printing path on Linux; a deliberately broken line proves the feature really
@@ -92,7 +92,7 @@ each one is verified today:
 | Windows installer and portable distribution work | built by CI, **not hand-tested** | `.github/workflows/release.yml` builds `pdf-rust-0.1.0-setup.exe` and `pdf-rust-0.1.0-win64.zip` on `windows-latest` and attaches them to the release; installation itself needs a Windows machine (see limitations) |
 | Linux package works | met (packages built and inspected; install not performed here) | `.deb` built with `dpkg-deb`, AppDir runs in place (`AppRun --selftest`) |
 | Recognised as a PDF reader by both systems | met on Linux, scripted on Windows | `application/pdf` MIME + desktop entry + AppStream; Windows ProgID + `OpenWithProgids` + `Applications` entry |
-| Critical features have automated or documented manual tests | met | 158 automated tests plus the manual matrix in `docs/testing.md` |
+| Critical features have automated or documented manual tests | met | 159 automated tests plus the manual matrix in `docs/testing.md` |
 | Source pushed to the configured remote | met | fast-forward pushes to `origin` after every milestone |
 
 ## Known bugs / limitations
