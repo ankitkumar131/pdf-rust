@@ -7,7 +7,10 @@
 
 use crate::app::dialogs::{Dialogs, ErrorDialog, FileDialog, GotoDialog, PasswordDialog, ResumePolicy, ResumeDialog};
 use crate::app::docview::{DocState, DocView, RotationScope};
-use crate::app::{Action, DialogKind, PerfStats, Regions, Settings, SidebarState, SidebarTab, Toast, ToastLevel};
+use crate::app::{
+    Action, DialogKind, MemoryPressure, MemoryStats, PerfStats, Regions, Settings, SidebarState,
+    SidebarTab, Toast, ToastLevel, CACHE_BUDGET_DEFAULT, CACHE_BUDGET_MAX, CACHE_BUDGET_MIN,
+};
 use crate::db::{DocumentRow, ReadingMode, ZoomMode};
 use crate::geom::{Point, Rect, Size};
 use crate::ui::icons::{self, Icon};
@@ -28,6 +31,7 @@ pub struct Chrome<'a> {
     pub presentation: bool,
     pub show_sidebar: bool,
     pub perf: &'a PerfStats,
+    pub memory: &'a MemoryStats,
     pub busy: &'a Option<String>,
     pub note: &'a Option<String>,
     pub engine_error: &'a Option<String>,
@@ -104,6 +108,7 @@ pub fn paint(ui: &mut Ui, c: &mut Chrome) {
             settings: c.settings,
             highlight_color: c.highlight_color,
             db_error: c.db_error,
+            memory: c.memory,
         };
         let mut out: Vec<Action> = Vec::new();
         paint_dialogs(ui, c.dialogs, &ctx, c.regions.window, &mut out);
@@ -1157,13 +1162,29 @@ fn paint_status(ui: &mut Ui, c: &mut Chrome) {
     }
 
     let stats = format!(
-        "{:.0} MB · render {:.0} ms · frame {:.1} ms",
+        "cache {:.0}/{:.0} MB · render {:.0} ms · frame {:.1} ms",
         c.perf.cache_bytes as f32 / (1024.0 * 1024.0),
+        c.perf.cache_budget as f32 / (1024.0 * 1024.0),
         c.perf.last_render_ms,
         c.perf.last_frame_ms
     );
     let w = ui.font.text_width(&stats, small);
-    ui.font.draw_text(ui.bmp, r.right() - w - 10.0, baseline, small, muted, &stats);
+    let stats_x = r.right() - w - 10.0;
+    ui.font.draw_text(ui.bmp, stats_x, baseline, small, muted, &stats);
+    // Memory pressure: a small dot plus a word, only when it is not "ok".
+    if c.perf.pressure != MemoryPressure::Ok {
+        let (color, label) = match c.perf.pressure {
+            MemoryPressure::Critical => (ui.theme.error, "low memory"),
+            MemoryPressure::Elevated => (ui.theme.warning, "memory"),
+            MemoryPressure::Ok => (muted, ""),
+        };
+        let text = format!("{} ", label);
+        let text_w = ui.font.text_width(&text, small);
+        let x = stats_x - text_w - 8.0;
+        ui.font.draw_text(ui.bmp, x, baseline, small, color, &text);
+        let dot = Point::new(x - 7.0, baseline - ui.font.ascent(small) * 0.32);
+        ui.bmp.fill_circle(dot.x, dot.y, 3.0, color);
+    }
 }
 
 fn paint_presentation_overlay(ui: &mut Ui, c: &mut Chrome) {
@@ -1227,6 +1248,7 @@ struct DialogCtx<'a> {
     settings: &'a Settings,
     highlight_color: u32,
     db_error: &'a Option<String>,
+    memory: &'a MemoryStats,
 }
 
 impl<'a> DialogCtx<'a> {
@@ -1241,10 +1263,15 @@ fn scrim(ui: &mut Ui) {
 }
 
 /// Draws the modal frame and returns the frame plus whether it was closed.
-fn modal_frame(ui: &mut Ui, window: Rect, w: f32, h: f32, title: &str) -> (Rect, bool) {
+/// A modal's frame rect, clamped to the window so it never spills off screen.
+fn modal_rect(window: Rect, w: f32, h: f32) -> Rect {
     let w = w.min((window.w - 40.0).max(260.0));
     let h = h.min((window.h - 40.0).max(160.0));
-    let r = Rect::new(window.x + (window.w - w) * 0.5, window.y + (window.h - h) * 0.5, w, h);
+    Rect::new(window.x + (window.w - w) * 0.5, window.y + (window.h - h) * 0.5, w, h)
+}
+
+fn modal_frame(ui: &mut Ui, window: Rect, w: f32, h: f32, title: &str) -> (Rect, bool) {
+    let r = modal_rect(window, w, h);
     ui.bmp.drop_shadow(r, 18.0, 0.4, ui.theme.shadow);
     ui.bmp.fill_round_rect(r, 10.0, ui.theme.modal_bg);
     ui.bmp.stroke_round_rect(r, 10.0, ui.theme.control_border, 1.0);
@@ -1503,6 +1530,7 @@ fn paint_password_dialog(ui: &mut Ui, d: &mut Dialogs, window: Rect, out: &mut V
     };
     let inner = Rect::new(frame.x + 20.0, frame.y + 60.0, frame.w - 40.0, frame.h - 78.0);
     let msg = format!("“{}” is protected. Enter its password.", dlg.document);
+    let doc_index = dlg.doc_index;
     let msg = ui.font.ellipsize(&msg, Metrics::TEXT_SIZE, inner.w).into_owned();
     ui.font.draw_text(ui.bmp, inner.x, inner.y + 14.0, Metrics::TEXT_SIZE, ui.theme.text, &msg);
     let field = Rect::new(inner.x, inner.y + 28.0, inner.w, 30.0);
@@ -1524,7 +1552,7 @@ fn paint_password_dialog(ui: &mut Ui, d: &mut Dialogs, window: Rect, out: &mut V
     let cancel = Rect::new(ok.x - 92.0, ok.y, 84.0, 32.0);
     if widgets::button(ui, id("password-cancel"), cancel, "Cancel", true, false) || resp.cancelled {
         d.password = None;
-        out.push(Action::CloseDialog);
+        out.push(Action::PasswordCancel(doc_index));
         return;
     }
     if widgets::button(ui, id("password-ok"), ok, "Unlock", true, true) || resp.submitted {
@@ -1534,49 +1562,158 @@ fn paint_password_dialog(ui: &mut Ui, d: &mut Dialogs, window: Rect, out: &mut V
     }
 }
 
+/// Page-cache budgets offered in the settings dialog (MiB).
+fn budget_choices() -> [usize; 4] {
+    let min_mb = CACHE_BUDGET_MIN / (1024 * 1024);
+    let max_mb = CACHE_BUDGET_MAX / (1024 * 1024);
+    let default_mb = CACHE_BUDGET_DEFAULT / (1024 * 1024);
+    [min_mb, default_mb, 384.min(max_mb), 768.min(max_mb)]
+}
+
+/// Outer size of the Settings dialog.
+pub const SETTINGS_DIALOG_SIZE: (f32, f32) = (560.0, 520.0);
+
+/// Every interactive rect inside the Settings dialog.
+///
+/// The painter and the tests both use this, so the tests click exactly where
+/// the buttons are drawn instead of duplicating the arithmetic.
+#[derive(Debug, Clone, Copy)]
+pub struct SettingsLayout {
+    pub frame: Rect,
+    pub inner: Rect,
+    pub dark: Rect,
+    pub smooth: Rect,
+    pub policies: [Rect; 3],
+    pub memory_label: Rect,
+    pub budget_buttons: [Rect; 4],
+    pub restore: Rect,
+    pub highlight_label: Rect,
+    pub colors: [Rect; 5],
+    pub keys: Rect,
+    pub done: Rect,
+}
+
+pub fn settings_layout(window: Rect) -> SettingsLayout {
+    let frame = modal_rect(window, SETTINGS_DIALOG_SIZE.0, SETTINGS_DIALOG_SIZE.1);
+    let inner = Rect::new(frame.x + 20.0, frame.y + 54.0, frame.w - 40.0, frame.h - 70.0);
+    // APPEARANCE
+    let dark = Rect::new(inner.x, inner.y + 20.0, inner.w, 26.0);
+    let smooth = Rect::new(inner.x, inner.y + 54.0, inner.w, 26.0);
+    // WHEN REOPENING A DOCUMENT
+    let mut y = inner.y + 88.0 + 22.0;
+    let mut policies = [Rect::ZERO; 3];
+    for r in policies.iter_mut() {
+        *r = Rect::new(inner.x, y, inner.w, 26.0);
+        y += 30.0;
+    }
+    // MEMORY
+    y += 8.0;
+    let memory_label = Rect::new(inner.x, y, inner.w, 16.0);
+    y += 44.0;
+    let budgets = budget_choices();
+    let gap = 8.0;
+    let btn_w = (inner.w - gap * (budgets.len() - 1) as f32) / budgets.len() as f32;
+    let mut budget_buttons = [Rect::ZERO; 4];
+    for (i, r) in budget_buttons.iter_mut().enumerate() {
+        *r = Rect::new(inner.x + i as f32 * (btn_w + gap), y, btn_w, 26.0);
+    }
+    y += 34.0;
+    let restore = Rect::new(inner.x, y, inner.w, 26.0);
+    // HIGHLIGHT COLOUR
+    y += 32.0;
+    let highlight_label = Rect::new(inner.x, y, inner.w, 16.0);
+    y += 24.0;
+    let mut colors = [Rect::ZERO; 5];
+    for (i, r) in colors.iter_mut().enumerate() {
+        *r = Rect::new(inner.x + 4.0 + i as f32 * 36.0, y, 26.0, 26.0);
+    }
+    let keys = Rect::new(frame.x + 20.0, frame.bottom() - 44.0, 130.0, 32.0);
+    let done = Rect::new(frame.right() - 104.0, frame.bottom() - 44.0, 86.0, 32.0);
+    SettingsLayout {
+        frame,
+        inner,
+        dark,
+        smooth,
+        policies,
+        memory_label,
+        budget_buttons,
+        restore,
+        highlight_label,
+        colors,
+        keys,
+        done,
+    }
+}
+
 fn paint_settings_dialog(ui: &mut Ui, d: &mut Dialogs, ctx: &DialogCtx, window: Rect, out: &mut Vec<Action>) {
-    let (frame, closed) = modal_frame(ui, window, 560.0, 470.0, "Settings");
+    let (_, closed) = modal_frame(
+        ui,
+        window,
+        SETTINGS_DIALOG_SIZE.0,
+        SETTINGS_DIALOG_SIZE.1,
+        "Settings",
+    );
     if closed {
         d.settings = false;
         out.push(Action::SaveSettings);
         return;
     }
-    let inner = Rect::new(frame.x + 20.0, frame.y + 54.0, frame.w - 40.0, frame.h - 70.0);
-    let mut y = inner.y;
-    widgets::section_label(ui, Rect::new(inner.x, y, inner.w, 16.0), "APPEARANCE");
-    y += 20.0;
-    if widgets::checkbox(ui, id("set-dark"), Rect::new(inner.x, y, inner.w, 26.0), "Dark theme (Ctrl+D)", ctx.settings.dark) {
+    let l = settings_layout(window);
+    let inner = l.inner;
+    widgets::section_label(ui, Rect::new(inner.x, inner.y, inner.w, 16.0), "APPEARANCE");
+    if widgets::checkbox(ui, id("set-dark"), l.dark, "Dark theme (Ctrl+D)", ctx.settings.dark) {
         out.push(Action::ToggleTheme);
     }
-    y += 34.0;
     if widgets::checkbox(
         ui,
         id("set-smooth"),
-        Rect::new(inner.x, y, inner.w, 26.0),
+        l.smooth,
         "Smooth scrolling",
         ctx.settings.smooth_scroll,
     ) {
         out.push(Action::SetSmoothScroll(!ctx.settings.smooth_scroll));
     }
-    y += 34.0;
-    widgets::section_label(ui, Rect::new(inner.x, y, inner.w, 16.0), "WHEN REOPENING A DOCUMENT");
-    y += 22.0;
-    for (i, policy) in [ResumePolicy::Ask, ResumePolicy::Always, ResumePolicy::Never].into_iter().enumerate() {
-        let r = Rect::new(inner.x, y, inner.w, 26.0);
-        let selected = ctx.settings.resume_policy == policy;
-        if widgets::button(ui, id(&format!("set-policy-{}", i)), r, policy.label(), true, selected) {
-            out.push(Action::SetResumePolicy(policy));
-        }
-        y += 30.0;
-    }
-    y += 8.0;
-    widgets::section_label(ui, Rect::new(inner.x, y, inner.w, 16.0), "HIGHLIGHT COLOUR");
-    y += 24.0;
-    for (i, color) in [0xFFFF_E066u32, 0xFFA8_E6A1, 0xFF9A_D0F5, 0xFFF5_A8C8, 0xFFD9_B3F5]
+    widgets::section_label(
+        ui,
+        Rect::new(inner.x, l.policies[0].y - 22.0, inner.w, 16.0),
+        "WHEN REOPENING A DOCUMENT",
+    );
+    for (i, policy) in [ResumePolicy::Ask, ResumePolicy::Always, ResumePolicy::Never]
         .into_iter()
         .enumerate()
     {
-        let r = Rect::new(inner.x + 4.0 + i as f32 * 36.0, y, 26.0, 26.0);
+        let selected = ctx.settings.resume_policy == policy;
+        if widgets::button(ui, id(&format!("set-policy-{}", i)), l.policies[i], policy.label(), true, selected) {
+            out.push(Action::SetResumePolicy(policy));
+        }
+    }
+    widgets::section_label(ui, l.memory_label, "MEMORY");
+    ui.font.draw_text(
+        ui.bmp,
+        inner.x,
+        l.memory_label.y + 34.0,
+        Metrics::SMALL_TEXT_SIZE,
+        ui.theme.text_muted,
+        "Shared page-cache budget for every open document:",
+    );
+    for (i, mb) in budget_choices().iter().enumerate() {
+        let selected = ctx.settings.cache_mb == *mb;
+        if widgets::button(ui, id(&format!("set-cache-{}", mb)), l.budget_buttons[i], &format!("{} MB", mb), true, selected) {
+            out.push(Action::SetCacheBudget(*mb));
+        }
+    }
+    if widgets::checkbox(
+        ui,
+        id("set-restore"),
+        l.restore,
+        "Reopen the documents from the last session",
+        ctx.settings.restore_session,
+    ) {
+        out.push(Action::SetRestoreSession(!ctx.settings.restore_session));
+    }
+    widgets::section_label(ui, l.highlight_label, "HIGHLIGHT COLOUR");
+    for (i, color) in crate::app::HIGHLIGHT_COLORS.into_iter().enumerate() {
+        let r = l.colors[i];
         let hit = ui.interact(id(&format!("set-color-{}", i)), r, true);
         ui.bmp.fill_round_rect(r, 6.0, Color::from_argb(color));
         let selected = ctx.highlight_color == color;
@@ -1590,7 +1727,7 @@ fn paint_settings_dialog(ui: &mut Ui, d: &mut Dialogs, ctx: &DialogCtx, window: 
             out.push(Action::SetHighlightColor(color));
         }
     }
-    y += 38.0;
+    let y = l.colors[0].y + 38.0;
     match ctx.db_error {
         Some(err) => {
             let text = ui
@@ -1610,19 +1747,17 @@ fn paint_settings_dialog(ui: &mut Ui, d: &mut Dialogs, ctx: &DialogCtx, window: 
             );
         }
     }
-    let keys = Rect::new(frame.x + 20.0, frame.bottom() - 44.0, 130.0, 32.0);
-    if widgets::button(ui, id("set-keys"), keys, "Shortcuts…", true, false) {
+    if widgets::button(ui, id("set-keys"), l.keys, "Shortcuts\u{2026}", true, false) {
         out.push(Action::ShowShortcuts(true));
     }
-    let done = Rect::new(frame.right() - 104.0, frame.bottom() - 44.0, 86.0, 32.0);
-    if widgets::button(ui, id("set-close"), done, "Done", true, true) {
+    if widgets::button(ui, id("set-close"), l.done, "Done", true, true) {
         d.settings = false;
         out.push(Action::SaveSettings);
     }
 }
 
 fn paint_info_dialog(ui: &mut Ui, d: &mut Dialogs, ctx: &DialogCtx, window: Rect, out: &mut Vec<Action>) {
-    let (frame, closed) = modal_frame(ui, window, 560.0, 420.0, "Document information");
+    let (frame, closed) = modal_frame(ui, window, 600.0, 560.0, "Document information");
     if closed {
         d.info = false;
         out.push(Action::CloseDialog);
@@ -1688,9 +1823,66 @@ fn paint_info_dialog(ui: &mut Ui, d: &mut Dialogs, ctx: &DialogCtx, window: Rect
         let text = ui.font.ellipsize(&value, Metrics::TEXT_SIZE, inner.w - 140.0).into_owned();
         ui.font.draw_text(ui.bmp, inner.x + 140.0, y + 12.0, Metrics::TEXT_SIZE, ui.theme.text, &text);
         y += 24.0;
-        if y > inner.bottom() {
+        if y > inner.bottom() - 120.0 {
             break;
         }
+    }
+
+    // ---- diagnostics: the shared cache and what it costs -------------------
+    let mem = ctx.memory;
+    let mut y = frame.y + 300.0;
+    ui.divider_h(Rect::new(inner.x, y - 8.0, inner.w, 1.0));
+    widgets::section_label(ui, Rect::new(inner.x, y, inner.w, 16.0), "MEMORY");
+    y += 20.0;
+    let pressure_color = match mem.pressure {
+        MemoryPressure::Ok => ui.theme.text_muted,
+        MemoryPressure::Elevated => ui.theme.warning,
+        MemoryPressure::Critical => ui.theme.error,
+    };
+    let summary = format!(
+        "{:.1} of {:.0} MB used · {} pages · {} evictions · pressure {}",
+        mem.used as f32 / (1024.0 * 1024.0),
+        mem.budget as f32 / (1024.0 * 1024.0),
+        mem.pages,
+        mem.evictions,
+        mem.pressure.label()
+    );
+    ui.font.draw_text(ui.bmp, inner.x, y + 10.0, Metrics::SMALL_TEXT_SIZE, pressure_color, &summary);
+    y += 18.0;
+    // A small bar shows the share of the budget in use.
+    let bar = Rect::new(inner.x, y, inner.w, 6.0);
+    ui.bmp.fill_round_rect(bar, 3.0, ui.theme.control_bg);
+    let fill = Rect::new(bar.x, bar.y, (bar.w * mem.ratio()).max(2.0), bar.h);
+    ui.bmp.fill_round_rect(fill, 3.0, pressure_color);
+    y += 16.0;
+    for doc in mem.documents.iter().take(4) {
+        let line = format!(
+            "{}{} · {:.1} MB · {} pages",
+            if doc.active { "▸ " } else { "  " },
+            doc.title,
+            doc.bytes as f64 / (1024.0 * 1024.0),
+            doc.pages
+        );
+        let text = ui.font.ellipsize(&line, Metrics::SMALL_TEXT_SIZE, inner.w).into_owned();
+        ui.font.draw_text(
+            ui.bmp,
+            inner.x,
+            y + 10.0,
+            Metrics::SMALL_TEXT_SIZE,
+            if doc.active { ui.theme.text } else { ui.theme.text_muted },
+            &text,
+        );
+        y += 16.0;
+        if y > frame.bottom() - 70.0 {
+            break;
+        }
+    }
+    if y <= frame.bottom() - 70.0 {
+        let rss = format!(
+            "peak process memory {:.0} MB",
+            mem.peak_rss as f64 / (1024.0 * 1024.0)
+        );
+        ui.font.draw_text(ui.bmp, inner.x, y + 10.0, Metrics::SMALL_TEXT_SIZE, ui.theme.text_muted, &rss);
     }
     let close = Rect::new(frame.right() - 104.0, frame.bottom() - 44.0, 86.0, 32.0);
     if widgets::button(ui, id("info-close"), close, "Close", true, true) {

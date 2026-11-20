@@ -656,6 +656,160 @@ fn extended_reading_keeps_the_cache_bounded() {
     assert_eq!(app.active_doc().unwrap().current_page(), 0);
 }
 
+/// Closing the app must remember the tabs (order and which one was active), the
+/// sidebar selection and its width, and a crash must be noticed on the next start.
+#[test]
+fn the_whole_session_comes_back_after_a_restart() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-session");
+    let db_path = dir.join("library.db");
+    let font = font();
+    let mut bmp = Bitmap::new(1100, 820);
+    let mut names = Vec::new();
+    for name in ["alpha.pdf", "beta.pdf", "gamma.pdf"] {
+        let pages: Vec<TestPage> = (0..3)
+            .map(|i| TestPage::a4(0).with_text(&[&format!("{} page {}", name, i + 1)]))
+            .collect();
+        names.push(PdfBuilder::new(pages).write_to(&dir.join(name)));
+    }
+
+    {
+        let mut app = app_with_db(&db_path);
+        app.window = Size::new(1100.0, 820.0);
+        for path in &names {
+            app.open_path(path.clone(), None);
+        }
+        assert!(pump(&mut app, &mut bmp, &font, |a| a.docs.len() == 3
+            && a.docs.iter().all(|d| d.is_ready())));
+        // Pretend the user picked the second tab, the outline panel and a wider
+        // sidebar, then closed the window properly.
+        app.apply_action(Action::ActivateDoc(1));
+        app.apply_action(Action::SetSidebarTab(
+            pdf_rust::app::SidebarTab::Outline,
+        ));
+        app.apply_action(Action::SetSidebarWidth(320.0));
+        app.save_all();
+        assert!(!app.recovered_session);
+    }
+
+    // A fresh process sees the same tabs in the same order with the same tab
+    // selected, and the sidebar the user left behind.
+    {
+        let mut app = app_with_db(&db_path);
+        app.window = Size::new(1100.0, 820.0);
+        assert!(!app.recovered_session, "the last run shut down cleanly");
+        assert_eq!(app.restore_session(), 3, "every tab comes back");
+        assert!(pump(&mut app, &mut bmp, &font, |a| {
+            a.docs.len() == 3 && a.docs.iter().all(|d| d.is_ready())
+        }));
+        let titles: Vec<&str> = app.docs.iter().map(|d| d.title.as_str()).collect();
+        assert_eq!(titles, ["alpha.pdf", "beta.pdf", "gamma.pdf"], "tab order is kept");
+        assert_eq!(app.active, 1, "the active tab is kept");
+        assert_eq!(app.sidebar.tab, pdf_rust::app::SidebarTab::Outline);
+        assert!((app.settings.sidebar_width - 320.0).abs() < 0.5);
+        assert!((app.window.w - 1100.0).abs() < 0.5);
+        // Simulate an unexpected exit: nothing is saved, the flag stays "dirty".
+        std::mem::forget(app);
+    }
+
+    // The next start knows the previous run did not shut down cleanly …
+    let mut app = app_with_db(&db_path);
+    assert!(app.recovered_session, "a crash is detected on the next start");
+    // … and the tabs are still there (they were saved as they changed).
+    assert_eq!(app.restore_session(), 3);
+    // A document that has disappeared is skipped instead of failing the restore.
+    std::fs::remove_file(&names[1]).unwrap();
+    let mut app = app_with_db(&db_path);
+    assert_eq!(app.restore_session(), 2, "the missing document is skipped");
+    let titles: Vec<&str> = app.docs.iter().map(|d| d.title.as_str()).collect();
+    assert_eq!(titles, ["alpha.pdf", "gamma.pdf"]);
+}
+
+/// The page cache is shared by every open document: reading two documents must
+/// not double the memory footprint, and the background document gives up its
+/// pages before the one on screen does.
+#[test]
+fn one_global_budget_covers_every_document() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-global-memory");
+    let a = build_pdf(&dir, 12);
+    let b = {
+        let pages: Vec<TestPage> = (0..12)
+            .map(|i| TestPage::a4(0).with_text(&[&format!("Second document {}", i + 1)]))
+            .collect();
+        PdfBuilder::new(pages).write_to(&dir.join("second.pdf"))
+    };
+    let mut app = App::new(Engine::start(), None, None);
+    app.window = Size::new(1200.0, 900.0);
+    app.open_path(a, None);
+    app.open_path(b, None);
+    let f = font();
+    let mut bmp = Bitmap::new(1200, 900);
+    assert!(pump(&mut app, &mut bmp, &f, |app| {
+        app.docs.len() == 2 && app.docs.iter().all(|d| d.is_ready())
+    }));
+    // Zoom both documents so a handful of pages costs tens of megabytes.
+    let viewport = app.content_rect().size();
+    for doc in &mut app.docs {
+        doc.set_zoom(ZoomMode::Custom, 2.5, viewport);
+    }
+    // The smallest budget the app offers is still far too small for both
+    // documents at this zoom level.
+    let budget = pdf_rust::app::CACHE_BUDGET_MIN;
+    app.set_cache_budget(budget);
+
+    // Read through the first document, then swap and read the second.
+    for _ in 0..10 {
+        app.frame(&press(Key::PageDown, false, false), &mut bmp, &f);
+        app.tick(app.now());
+        app.frame(&input_none(), &mut bmp, &f);
+    }
+    app.frame(&press(Key::Tab, true, false), &mut bmp, &f);
+    assert_eq!(app.active, 0, "the first document is active again");
+    for _ in 0..10 {
+        app.frame(&press(Key::PageDown, false, false), &mut bmp, &f);
+        app.tick(app.now());
+        app.frame(&input_none(), &mut bmp, &f);
+        // Rows are ordered largest first, so find the active one by flag.
+        let stats = app.memory_stats();
+        assert_eq!(stats.documents.len(), 2);
+        assert_eq!(stats.documents.iter().filter(|d| d.active).count(), 1);
+        assert!(stats.documents.iter().any(|d| d.active && d.pages > 0));
+    }
+
+    app.enforce_cache_budget();
+    let stats = app.memory_stats();
+    assert_eq!(stats.budget, budget);
+    assert!(
+        stats.used <= budget,
+        "{} bytes cached with a {} byte global budget",
+        stats.used,
+        budget
+    );
+    assert!(stats.pages > 0, "the visible page is still cached");
+    // The page the user is looking at is never thrown away.
+    assert!(!app.docs[0].cache.is_empty());
+    // The background document was trimmed first.
+    assert!(
+        app.docs[1].cache.len() <= app.docs[0].cache.len(),
+        "background document kept {} pages, active kept {}",
+        app.docs[1].cache.len(),
+        app.docs[0].cache.len()
+    );
+    // Switching back to the background document still renders.
+    app.frame(&press(Key::Tab, true, false), &mut bmp, &f);
+    assert!(pump(&mut app, &mut bmp, &f, |app| {
+        app.active == 1 && app.docs[1].cache.len() > 0
+    }));
+    // Raising the budget again is possible at runtime.
+    app.set_cache_budget(512 * 1024 * 1024);
+    assert_eq!(app.memory_stats().pressure, pdf_rust::app::MemoryPressure::Ok);
+}
+
 /// The "smooth scrolling" preference must actually change behaviour: with it on
 /// a wheel step eases towards the target over several frames, with it off the
 /// offset jumps immediately.
@@ -730,25 +884,9 @@ fn click_at(app: &mut App, bmp: &mut Bitmap, f: &Font, at: Point) {
     app.frame(&up, bmp, f);
 }
 
-/// Settings dialog geometry, mirroring `chrome::paint_settings_dialog`.
-fn settings_rects(window: Rect) -> (Rect, Rect, Rect, [Rect; 3]) {
-    let frame = Rect::new(
-        window.x + (window.w - 560.0) * 0.5,
-        window.y + (window.h - 470.0) * 0.5,
-        560.0,
-        470.0,
-    );
-    let inner = Rect::new(frame.x + 20.0, frame.y + 54.0, frame.w - 40.0, frame.h - 70.0);
-    let dark = Rect::new(inner.x, inner.y + 20.0, inner.w, 26.0);
-    let smooth = Rect::new(inner.x, inner.y + 54.0, inner.w, 26.0);
-    let mut policies = [Rect::ZERO; 3];
-    let mut y = inner.y + 76.0 + 22.0;
-    for r in policies.iter_mut() {
-        *r = Rect::new(inner.x, y, inner.w, 26.0);
-        y += 30.0;
-    }
-    let done = Rect::new(frame.right() - 104.0, frame.bottom() - 44.0, 86.0, 32.0);
-    (dark, smooth, done, policies)
+/// Settings dialog geometry, straight from the painter's layout.
+fn settings_layout(window: Rect) -> pdf_rust::ui::chrome::SettingsLayout {
+    pdf_rust::ui::chrome::settings_layout(window)
 }
 
 /// Every control in the Settings dialog must work and survive a restart.
@@ -762,7 +900,9 @@ fn settings_dialog_changes_and_saves_preferences() {
     let font = font();
     let mut bmp = Bitmap::new(1000, 800);
     let window = Rect::new(0.0, 0.0, 1000.0, 800.0);
-    let (dark, smooth, done, policies) = settings_rects(window);
+    let layout = settings_layout(window);
+    let (dark, smooth, done) = (layout.dark, layout.smooth, layout.done);
+    let policies = layout.policies;
 
     {
         let mut app = app_with_db(&db_path);
@@ -793,6 +933,28 @@ fn settings_dialog_changes_and_saves_preferences() {
             "resume policy buttons select a policy"
         );
 
+        // The smallest cache budget offered must apply to the app right away.
+        app.frame(&input_none(), &mut bmp, &font);
+        click_at(&mut app, &mut bmp, &font, layout.budget_buttons[0].center());
+        assert_eq!(
+            app.cache_budget,
+            pdf_rust::app::CACHE_BUDGET_MIN,
+            "a budget button updates the live cache budget"
+        );
+        assert_eq!(app.settings.cache_mb, pdf_rust::app::CACHE_BUDGET_MIN / (1024 * 1024));
+
+        app.frame(&input_none(), &mut bmp, &font);
+        let restore = app.settings.restore_session;
+        click_at(&mut app, &mut bmp, &font, layout.restore.center());
+        assert_eq!(
+            app.settings.restore_session, !restore,
+            "the session checkbox toggles"
+        );
+
+        app.frame(&input_none(), &mut bmp, &font);
+        click_at(&mut app, &mut bmp, &font, layout.colors[2].center());
+        assert_eq!(app.highlight_color, 0xFF9A_D0F5, "colour swatches select a colour");
+
         app.frame(&input_none(), &mut bmp, &font);
         click_at(&mut app, &mut bmp, &font, done.center());
         assert!(!app.dialogs.settings, "Done closes the dialog");
@@ -807,6 +969,133 @@ fn settings_dialog_changes_and_saves_preferences() {
         pdf_rust::app::dialogs::ResumePolicy::Always,
         "resume policy persisted"
     );
+    assert_eq!(
+        saved.cache_mb,
+        pdf_rust::app::CACHE_BUDGET_MIN / (1024 * 1024),
+        "cache budget persisted"
+    );
+    assert!(!saved.restore_session, "session restore preference persisted");
+    assert_eq!(saved.highlight_color, 0xFF9A_D0F5, "highlight colour persisted");
+}
+
+/// Tab and Shift+Tab must walk the controls on screen, so the app is usable
+/// without a mouse, and Enter must press whatever has the focus.
+#[test]
+fn keyboard_focus_visits_every_control_and_can_activate_one() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-focus");
+    let path = build_pdf(&dir, 2);
+    let mut app = App::new(Engine::start(), None, None);
+    app.window = Size::new(1100.0, 800.0);
+    app.open_path(path, None);
+    let f = font();
+    let mut bmp = Bitmap::new(1100, 800);
+    assert!(pump(&mut app, &mut bmp, &f, |a| {
+        a.active_doc().map(|d| d.is_ready()).unwrap_or(false)
+    }));
+    assert_eq!(app.ui.focus, None, "nothing is focused after opening");
+    app.frame(&input_none(), &mut bmp, &f);
+
+    let tab = |app: &mut App, bmp: &mut Bitmap, f: &Font, shift: bool| {
+        app.frame(&press(Key::Tab, false, shift), bmp, f);
+        app.frame(&input_none(), bmp, f);
+        app.ui.focus
+    };
+    let first = tab(&mut app, &mut bmp, &f, false);
+    assert!(first.is_some(), "Tab focuses the first control");
+    let mut seen = vec![first];
+    for _ in 0..12 {
+        let next = tab(&mut app, &mut bmp, &f, false);
+        assert!(next.is_some());
+        if seen.last() != Some(&next) {
+            seen.push(next);
+        }
+    }
+    assert!(seen.len() >= 3, "several controls are reachable ({seen:?})");
+    // Shift+Tab steps back to the control that was focused before.
+    let before = app.ui.focus;
+    let forward = tab(&mut app, &mut bmp, &f, false);
+    assert_ne!(forward, before, "Tab moved on");
+    let back = tab(&mut app, &mut bmp, &f, true);
+    assert_eq!(back, before, "Shift+Tab returns to the previous control");
+    // Enter presses the focused control: with the settings dialog open, park the
+    // focus on the theme checkbox and press Enter.
+    app.dialogs.settings = true;
+    app.frame(&input_none(), &mut bmp, &f);
+    app.ui.focus = Some(pdf_rust::ui::id("set-dark"));
+    app.frame(&input_none(), &mut bmp, &f);
+    let dark = app.settings.dark;
+    app.frame(&press(Key::Enter, false, false), &mut bmp, &f);
+    assert_eq!(app.settings.dark, !dark, "Enter presses the focused control");
+    app.dialogs.settings = false;
+    app.frame(&input_none(), &mut bmp, &f);
+
+    // Ctrl+Tab still switches documents instead of moving focus.
+    app.open_path(build_pdf(&dir, 1), None);
+    app.frame(&press(Key::Tab, true, false), &mut bmp, &f);
+    assert_eq!(app.active, 0, "Ctrl+Tab keeps switching documents");
+}
+
+/// A password-protected document must prompt, keep prompting after a wrong
+/// password (without turning it into a fatal error dialog) and open once the
+/// right one is typed. Cancelling must not leave a dead tab behind.
+#[test]
+fn password_protected_documents_prompt_and_retry() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-password");
+    let mut builder = PdfBuilder::new(vec![
+        TestPage::a4(0).with_text(&["Locked page"]),
+        TestPage::a4(0).with_text(&["Second locked page"]),
+    ]);
+    builder.encrypt = Some(("s3cret".into(), "owner".into()));
+    let path = builder.write_to(&dir.join("locked.pdf"));
+
+    let mut app = App::new(Engine::start(), None, None);
+    app.window = Size::new(1000.0, 800.0);
+    app.open_path(path.clone(), None);
+    let f = font();
+    let mut bmp = Bitmap::new(1000, 800);
+    assert!(pump(&mut app, &mut bmp, &f, |app| app.dialogs.password.is_some()));
+    let dialog = app.dialogs.password.as_ref().unwrap();
+    assert_eq!(dialog.document, "locked.pdf");
+    assert!(dialog.error.is_none(), "no error on the first prompt");
+    assert!(app.dialogs.error.is_none(), "a password is not a fatal error");
+
+    // Wrong password: the dialog comes back with an explanation.
+    app.apply_action(Action::PasswordSubmit("nope".into()));
+    assert!(pump(&mut app, &mut bmp, &f, |app| {
+        app.dialogs.password.as_ref().map(|d| d.error.is_some()).unwrap_or(false)
+    }), "a rejected password reopens the prompt");
+    assert!(app.dialogs.error.is_none(), "still not a fatal error");
+    assert_eq!(app.docs.len(), 1, "the document keeps its tab");
+
+    // Correct password: the document opens.
+    app.apply_action(Action::PasswordSubmit("s3cret".into()));
+    assert!(pump(&mut app, &mut bmp, &f, |app| {
+        app.docs.first().map(|d| d.is_ready()).unwrap_or(false)
+    }), "the right password opens the document");
+    assert!(app.dialogs.password.is_none());
+    app.tick(app.now());
+    app.frame(&input_none(), &mut bmp, &f);
+
+    // Cancelling the prompt drops the tab instead of leaving it unusable.
+    app.open_path(dir.join("locked.pdf"), None);
+    let second = PdfBuilder::new(vec![TestPage::a4(0).with_text(&["Another"])]);
+    let mut second = second;
+    second.encrypt = Some(("other".into(), "owner".into()));
+    let other = second.write_to(&dir.join("other-locked.pdf"));
+    app.open_path(other, None);
+    assert!(pump(&mut app, &mut bmp, &f, |app| app.dialogs.password.is_some()));
+    let index = app.dialogs.password.as_ref().unwrap().doc_index;
+    let before = app.docs.len();
+    app.apply_action(Action::PasswordCancel(index));
+    assert!(app.dialogs.password.is_none());
+    assert_eq!(app.docs.len(), before - 1, "cancelling closes the tab");
+    assert_eq!(app.active_doc().map(|d| d.title.as_str()), Some("locked.pdf"));
 }
 
 /// Closing one tab must leave the other documents open.

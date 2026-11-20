@@ -143,12 +143,81 @@ pub struct UiState {
     pub clipboard_set: Option<String>,
     /// Animation clock used by the loading spinner.
     pub start_time: f64,
+    /// Focusable widgets painted this frame, in reading order. Rebuilt on every
+    /// frame so Tab always follows what is on screen.
+    focus_order: Vec<Id>,
+    /// Tab (+1) or Shift+Tab (-1) pressed this frame.
+    focus_step: Option<i32>,
+    /// Enter or Space pressed this frame (activates the focused control).
+    activate_key: bool,
+    /// The focused widget that can be activated from the keyboard, if any.
+    /// Rebuilt while painting; `focus_activatable` is the settled answer that
+    /// the keyboard handler reads on the next frame.
+    pub activatable_focus: Option<Id>,
+    /// True when the focused control can be pressed with Enter or Space.
+    pub focus_activatable: bool,
 }
 
 impl UiState {
     pub fn begin_frame(&mut self) {
         self.tooltip = None;
         self.clipboard_set = None;
+        self.focus_order.clear();
+        self.focus_step = None;
+        self.activate_key = false;
+        self.activatable_focus = None;
+    }
+
+    /// Records a widget that Tab can reach, in paint order.
+    pub fn register_focusable(&mut self, id: Id) {
+        if !self.focus_order.contains(&id) {
+            self.focus_order.push(id);
+        }
+    }
+
+    /// Asks for focus to move on the next frame (from the keyboard handler).
+    pub fn step_focus(&mut self, delta: i32) {
+        self.focus_step = Some(delta);
+    }
+
+    /// True when the keyboard asked for the focused control to be activated.
+    pub fn keyboard_activated(&self, id: Id) -> bool {
+        self.activate_key && self.focus == Some(id) && !self.modal
+    }
+
+    /// Marks the Enter/Space press handled by the focused control this frame.
+    pub fn set_activate_key(&mut self) {
+        self.activate_key = true;
+    }
+
+    /// Notes that the keyboard activated `id`, so no other handler (page
+    /// scrolling, for instance) consumes the same key press.
+    pub fn mark_activatable(&mut self, id: Id) {
+        if self.focus == Some(id) && !self.modal {
+            self.activatable_focus = Some(id);
+        }
+    }
+
+    /// Moves focus after a Tab press. Called once the frame is painted, when the
+    /// full order of focusable widgets is known.
+    pub fn end_frame(&mut self) {
+        if let Some(delta) = self.focus_step.take() {
+            if self.focus_order.is_empty() {
+                self.focus = None;
+                return;
+            }
+            let current = self
+                .focus
+                .and_then(|id| self.focus_order.iter().position(|f| *f == id));
+            let next = match (current, delta.signum()) {
+                (Some(index), 1) => (index + 1) % self.focus_order.len(),
+                (Some(index), _) => (index + self.focus_order.len() - 1) % self.focus_order.len(),
+                (None, 1) => 0,
+                (None, _) => self.focus_order.len() - 1,
+            };
+            self.focus = Some(self.focus_order[next]);
+        }
+        self.focus_activatable = self.activatable_focus.is_some();
     }
 
     pub fn dragging(&self) -> Option<Id> {
@@ -212,6 +281,9 @@ impl<'a> Ui<'a> {
                 self.state.hot = None;
             }
             return false;
+        }
+        if !self.state.modal {
+            self.state.register_focusable(id);
         }
         if self.state.modal {
             return false;

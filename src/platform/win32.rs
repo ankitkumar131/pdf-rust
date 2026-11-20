@@ -231,6 +231,7 @@ extern "system" {
     ) -> *mut c_void;
     fn GetSystemMetrics(index: i32) -> i32;
     fn GetClientRect(hwnd: Hwnd, rect: *mut Rect32) -> Bool;
+    fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect32) -> Bool;
     fn ScreenToClient(hwnd: Hwnd, point: *mut Point32) -> Bool;
     fn SetWindowPos(
         hwnd: Hwnd,
@@ -503,6 +504,9 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam
         // SAFETY: default handling for messages before the shell is installed.
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     };
+    // A mutable borrow is needed for the state that outlives a message.
+    #[allow(unused_mut)]
+    let mut shell = shell;
     match msg {
         WM_PAINT => {
             let mut paint = PaintStruct {
@@ -692,6 +696,7 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam
             0
         }
         WM_CLOSE => {
+            remember_window_rect(&mut shell, hwnd);
             shell.app.save_all();
             shell.quit = true;
             // SAFETY: destroys the window this shell created.
@@ -880,6 +885,21 @@ fn clipboard_write(text: &str) -> Result<(), String> {
 }
 
 /// Runs the reader on Windows until the user quits.
+/// Copies the window's current rectangle into the settings so it can be
+/// reopened at the same place and size.
+fn remember_window_rect(shell: &mut Shell, hwnd: Hwnd) {
+    let mut outer = Rect32::default();
+    // SAFETY: the window handle is live; the rectangle is local.
+    if unsafe { GetWindowRect(hwnd, &mut outer) } == 0 {
+        return;
+    }
+    let w = (outer.right - outer.left).max(0) as f32;
+    let h = (outer.bottom - outer.top).max(0) as f32;
+    if w > 0.0 && h > 0.0 {
+        shell.app.settings.window = crate::geom::Rect::new(outer.left as f32, outer.top as f32, w, h);
+    }
+}
+
 pub fn run(app: App, font: Font) -> Result<(), String> {
     // SAFETY: DPI awareness is process-wide and optional.
     unsafe {
@@ -925,6 +945,14 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
     unsafe {
         AdjustWindowRectEx(&mut rect, WS_OVERLAPPEDWINDOW, 0, 0);
     }
+    // Reopen where the user left the window (CW_USEDEFAULT lets the window
+    // manager pick a place when nothing was saved yet).
+    let saved = app.settings.window;
+    let (start_x, start_y) = if saved.x >= 0.0 && saved.y >= 0.0 && saved.w > 0.0 {
+        (saved.x as i32, saved.y as i32)
+    } else {
+        (CW_USEDEFAULT, CW_USEDEFAULT)
+    };
     let title = wide(&crate::platform::window_title(None));
     // SAFETY: standard CreateWindowExW call with a registered class.
     let hwnd = unsafe {
@@ -933,8 +961,8 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
             class_name.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            start_x,
+            start_y,
             rect.right - rect.left,
             rect.bottom - rect.top,
             std::ptr::null_mut(),
@@ -1049,6 +1077,7 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
             shell.quit = true;
         }
     }
+    remember_window_rect(&mut shell, hwnd);
     shell.app.save_all();
     // SAFETY: teardown of the timer, the brush and the shell pointer.
     unsafe {

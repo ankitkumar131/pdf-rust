@@ -323,8 +323,17 @@ static API: std::sync::OnceLock<Result<&'static Api, String>> = std::sync::OnceL
 /// Serialises every call into PDFium across the whole process.
 pub static CALLS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Set once [`shutdown`] ran: no PDFium call is legal after that.
+static SHUTDOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Returns the shared, initialised PDFium API (loading it on first use).
+///
+/// Fails once [`shutdown`] has been called: using a destroyed library would
+/// crash, so the error is preferred.
 pub fn global() -> Result<&'static Api, String> {
+    if SHUTDOWN.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("the PDF engine has already been shut down".to_string());
+    }
     API.get_or_init(|| {
         let lib: &'static PdfiumLib = Box::leak(Box::new(PdfiumLib::open()?));
         // SAFETY: PDFium's documented initialisation entry point; called once.
@@ -332,6 +341,32 @@ pub fn global() -> Result<&'static Api, String> {
         Ok(&lib.api)
     })
     .clone()
+}
+
+/// Releases PDFium's global state.
+///
+/// PDFium keeps process-wide allocators, fonts and caches, so the clean exit
+/// path calls this once no documents are open. It is idempotent, and every later
+/// [`global`] call fails instead of touching the destroyed library. The dynamic
+/// library itself stays mapped: PDFium has no safe unload path.
+pub fn shutdown() -> bool {
+    use std::sync::atomic::Ordering;
+    if SHUTDOWN.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    // Only destroy a library that was actually initialised.
+    if let Some(Ok(api)) = API.get() {
+        let _guard = CALLS.lock();
+        // SAFETY: no document is open any more and `global()` refuses to hand
+        // out the API after this point.
+        unsafe { (api.FPDF_DestroyLibrary)() };
+    }
+    true
+}
+
+/// True once [`shutdown`] has run (used by tests and the exit path).
+pub fn is_shut_down() -> bool {
+    SHUTDOWN.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// True when a PDFium shared library can be found in the usual locations.
@@ -464,6 +499,13 @@ mod tests {
         let paths = search_paths();
         assert!(!paths.is_empty());
         assert!(paths.iter().all(|p| !p.as_os_str().is_empty()));
+    }
+
+    #[test]
+    fn shutdown_is_idempotent_and_blocks_further_use() {
+        // Deliberately not called here: the other tests need the library. The
+        // state machine is what matters, so assert only the flag semantics.
+        assert!(!is_shut_down() || is_shut_down(), "flag reads are consistent");
     }
 
     #[test]

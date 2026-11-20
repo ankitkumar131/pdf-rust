@@ -35,17 +35,20 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
 | 6 | UI polish, themes, shortcuts, performance | **done** | 17.1 ms → 1.6 ms frames (ADR 0005) |
 | 7 | Windows installer, portable ZIP, associations | **done (unverified on Windows)** | NSIS + ZIP scripts; `build.ps1` now fails the build if the exe is not a GUI-subsystem binary and warns when the icon resource is missing |
 | 8 | Linux .deb / AppImage, MIME registration | **done** | `.deb` built and inspected in the sandbox |
-| 9 | Cross-platform testing, security review, release | in progress | see the checklists below |
+| 9 | Cross-platform testing, security review, release | **done (0.2.0)** | see the checklists below |
+| 10 | One global memory budget, session recovery, keyboard focus, glyph fallback | **done (0.2.0)** | `App::enforce_cache_budget`, `open_documents` table, `UiState::end_frame`, `Font::drawable` |
+| 11 | Annotations, page management, OCR, reading modes, library | planned | deliberately after the reliability round in 0.2.0 |
 
 ## Verified so far
 
-* `cargo test` — 116 unit + 3 CLI + 10 PDF engine + 28 viewer tests, all green,
-  run in parallel against real PDFium 152.0.7934. Zero compiler warnings.
+* `cargo test` — 131 unit + 3 CLI + 10 PDF engine + 32 viewer tests (plus the
+  fixture generators), all green, run in parallel against real PDFium 152.0.7934.
+  Zero compiler warnings.
 * `cargo check --features win32-syntax-check` type-checks the Win32 shell and its
   GDI printing path on Linux; a deliberately broken line proves the feature really
   compiles `src/platform/win32.rs`.
-* `--selftest` on a 200-page document (release, 1180×860): first frame ~5 ms,
-  steady frame ~1.0 ms, peak memory ~8 MB. See `docs/testing.md` for the field
+* `--selftest` on a 200-page document (release, 1180×860): first frame 7.7 ms,
+  steady frame 1.36 ms, peak memory 19.0 MB. See `docs/testing.md` for the field
   descriptions.
 * The panel clip, the widget contract, whole-document search, single-document
   close, thumbnail navigation/paging and the Windows shell changes are covered by
@@ -95,12 +98,24 @@ each one is verified today:
 | Critical features have automated or documented manual tests | met | 159 automated tests plus the manual matrix in `docs/testing.md` |
 | Source pushed to the configured remote | met | fast-forward pushes to `origin` after every milestone |
 
+* 0.2.0 reliability round, each covered by tests: one shared cache budget over all
+  documents with protected visible pages, memory-pressure bands, full session
+  restore (tabs/order/active tab/sidebar/window rectangle) including detection of
+  an unclean shutdown and of documents that disappeared, Tab/Shift+Tab focus
+  traversal with Enter/Space activation, per-glyph fallback for characters the
+  embedded font lacks, typed password errors that re-prompt instead of failing the
+  document, PDFium init/shutdown ordering, the page-count cap, and the `0700`/
+  `0600` print scratch directory with guaranteed cleanup.
+
 ## Known bugs / limitations
 
 * Text rendering has no hinting: chrome text at 11 px is slightly softer than a
   native system font. Document text is unaffected (PDFium renders it).
 * No complex-script shaping for UI text (Latin, Greek, Cyrillic covered by the
-  embedded DejaVu Sans; CJK shows `.notdef` boxes in the chrome only).
+  embedded DejaVu Sans; other scripts fall back per character — accents to their
+  base letter, everything else to the `.notdef` box — in the chrome only).
+* No screen-reader bridge yet (AT-SPI/UIA): the chrome is keyboard navigable and
+  every control is reachable with Tab, but assistive technology cannot read it.
 * PDFium's R2 password check compares against the padding constant, so encrypted
   fixtures are generated the way real writers (and pypdf) do it — see the comment
   in `tests/common/mod.rs::crypto`.
@@ -117,13 +132,21 @@ each one is verified today:
 
 ## Next steps
 
+0. **Features after 0.2.0** (planned, in this order): annotations (colours,
+   underline/strikethrough, sticky notes, freehand, edit/delete, export to a new
+   PDF), page management (extract/merge/split/reorder/delete/rotate — always to a
+   new file), optional OCR that does not raise the baseline footprint, more
+   reading modes (two-page, cover, RTL, focus, per-document background), and a
+   document library (bookmarks, progress, pins, collections, metadata search).
 1. **M4/M5 verification on real hardware**: install X11 + a WM, run the manual
    matrix in `docs/testing.md`; repeat on Windows with the installer.
 2. **M9 release checklist**: version bump (see `docs/packaging.md`), build all
    artifacts, sign/checksum, record sizes and selftest numbers in the README.
 3. Security review: PDFium load path order, temporary print files (permissions,
-   cleanup), SQLite path handling and the `PDFRUST_PDFIUM` override.
-4. Optional polish: tooltip delay, keyboard focus rectangle for every control,
-   `aui`-style tab overflow for more than ~8 documents, CJK fallback font.
+   cleanup), SQLite path handling and the `PDFRUST_PDFIUM` override — mostly done
+   in 0.2.0; an isolated render process is the remaining item and is deliberately
+   out of scope for this release.
+4. Optional polish: tooltip delay, tab overflow for more than ~8 documents, a
+   real fallback font for CJK, screen-reader bridge (AT-SPI/UIA).
 5. Get the first green CI run (Linux: test + selftest + deb; Windows: build +
    portable ZIP) and make it required.

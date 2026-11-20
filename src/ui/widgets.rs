@@ -7,7 +7,12 @@ use crate::geom::{clamp, Point, Rect};
 
 /// Draws a standard push button. Returns true when clicked.
 pub fn button(ui: &mut Ui, id: Id, r: Rect, label: &str, enabled: bool, primary: bool) -> bool {
-    let clicked = ui.interact(id, r, enabled);
+    let mut clicked = ui.interact(id, r, enabled);
+    if enabled && ui.state.focus == Some(id) {
+        // Reachable with Tab: Enter or Space presses it.
+        ui.state.mark_activatable(id);
+        clicked |= ui.state.keyboard_activated(id);
+    }
     let theme = ui.theme;
     let hovered = ui.hovered(r) && enabled;
     let active = ui.state.active == Some(id);
@@ -567,7 +572,11 @@ fn draw_clipped_text(ui: &mut Ui, x: f32, baseline: f32, text: &str, clip: Rect)
 /// Checkbox-style settings row. Returns true on the frame the box is clicked
 /// (the caller owns the value, so a checked box is not reported as a click).
 pub fn checkbox(ui: &mut Ui, id: Id, r: Rect, label: &str, value: bool) -> bool {
-    let clicked = ui.interact(id, r, true);
+    let mut clicked = ui.interact(id, r, true);
+    if ui.state.focus == Some(id) {
+        ui.state.mark_activatable(id);
+        clicked |= ui.state.keyboard_activated(id);
+    }
     let theme = ui.theme;
     if ui.hovered(r) {
         ui.bmp.fill_round_rect(r.inset_xy(2.0, 1.0), 5.0, theme.control_hover);
@@ -588,6 +597,15 @@ pub fn checkbox(ui: &mut Ui, id: Id, r: Rect, label: &str, value: bool) -> bool 
         let cx = b.center();
         ui.bmp.stroke_line(cx.x - 4.0, cx.y, cx.x - 1.0, cx.y + 3.0, 2.0, theme.accent_text);
         ui.bmp.stroke_line(cx.x - 1.0, cx.y + 3.0, cx.x + 4.0, cx.y - 3.5, 2.0, theme.accent_text);
+    }
+    if ui.state.focus == Some(id) {
+        // Keyboard focus ring, so Tab navigation is visible.
+        ui.bmp.stroke_round_rect(
+            r.inset(-2.0),
+            6.0,
+            theme.accent.fade(0.7),
+            1.5,
+        );
     }
     let baseline = r.y + (r.h + ui.font.ascent(Metrics::TEXT_SIZE) * 0.72) * 0.5;
     let text = ui.font.ellipsize(label, Metrics::TEXT_SIZE, r.right() - b.right() - 20.0);

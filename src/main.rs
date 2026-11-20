@@ -271,6 +271,17 @@ fn screenshot(options: &Options, out: &std::path::Path) -> Result<(), String> {
     if let Some(page) = options.page {
         app.pending_initial_page = Some(page);
     }
+    // Reopen the previous session's tabs (unless files were given on the
+    // command line, which take precedence).
+    if options.docs.is_empty() {
+        let restored = app.restore_session();
+        if restored > 0 && app.recovered_session {
+            eprintln!(
+                "pdf-rust: the previous session ended unexpectedly; restored {} document(s)",
+                restored
+            );
+        }
+    }
     if let Some(path) = options.docs.first() {
         app.open_path(path.clone(), None);
         let deadline = Instant::now() + std::time::Duration::from_secs(20);
@@ -356,6 +367,17 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(page) = options.page {
         app.pending_initial_page = Some(page);
     }
+    // Reopen the previous session's tabs (unless files were given on the
+    // command line, which take precedence).
+    if options.docs.is_empty() {
+        let restored = app.restore_session();
+        if restored > 0 && app.recovered_session {
+            eprintln!(
+                "pdf-rust: the previous session ended unexpectedly; restored {} document(s)",
+                restored
+            );
+        }
+    }
     let startup_ms = started.elapsed().as_secs_f32() * 1000.0;
     if std::env::var("PDFRUST_STATS").is_ok() {
         eprintln!("pdf-rust: startup {:.1} ms", startup_ms);
@@ -440,10 +462,14 @@ fn main() -> ExitCode {
     #[cfg(any(windows, feature = "win32-syntax-check"))]
     attach_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match parse_args(&args).and_then(|options| match options {
+    let result = parse_args(&args).and_then(|options| match options {
         Some(options) => run(options),
         None => Ok(()),
-    }) {
+    });
+    // Every engine (and therefore every document) is gone by now, so PDFium's
+    // global state can be released before the process exits.
+    pdf_rust::pdf::ffi::shutdown();
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("pdf-rust: {}", message);

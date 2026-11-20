@@ -28,9 +28,24 @@ use docview::{DocState, DocView, RotationScope, Selection};
 
 /// Bitmap cache budget per document (bytes). Total memory is bounded by the
 /// number of open documents times this value.
-pub const CACHE_LIMIT_BYTES: usize = 192 * 1024 * 1024;
+/// Default *global* page-cache budget, shared by every open document.
+pub const CACHE_BUDGET_DEFAULT: usize = 192 * 1024 * 1024;
+/// Smallest and largest budget the settings dialog and `--cache-mb` accept.
+pub const CACHE_BUDGET_MIN: usize = 64 * 1024 * 1024;
+pub const CACHE_BUDGET_MAX: usize = 2048 * 1024 * 1024;
+/// What a background document may keep so switching back feels instant.
+pub const INACTIVE_DOC_CACHE_BYTES: usize = 3 * 1024 * 1024;
 /// Thumbnails are rendered at this scale (milli-pixels per PDF point).
 pub const THUMB_SCALE_MILLI: u32 = 260;
+/// Highlight colours offered in the settings dialog (ARGB).
+pub const HIGHLIGHT_COLORS: [u32; 5] = [
+    0xFFFF_E066,
+    0xFFA8_E6A1,
+    0xFF9A_D0F5,
+    0xFFF5_A8C8,
+    0xFFD9_B3F5,
+];
+
 /// Maximum number of render requests in flight.
 const MAX_INFLIGHT_RENDERS: usize = 6;
 /// How often dirty sessions are written (seconds).
@@ -49,6 +64,14 @@ pub struct Settings {
     pub window_maximized: bool,
     pub smooth_scroll: bool,
     pub page_fit_mode: ZoomMode,
+    /// Global page-cache budget in MiB, shared by all documents.
+    pub cache_mb: usize,
+    /// Reopen the documents that were open when the app last exited.
+    pub restore_session: bool,
+    /// Default colour for new highlights (ARGB).
+    pub highlight_color: u32,
+    /// Sidebar panel shown at startup.
+    pub sidebar_tab: SidebarTab,
 }
 
 impl Default for Settings {
@@ -62,6 +85,10 @@ impl Default for Settings {
             window_maximized: false,
             smooth_scroll: true,
             page_fit_mode: ZoomMode::FitPage,
+            cache_mb: CACHE_BUDGET_DEFAULT / (1024 * 1024),
+            restore_session: true,
+            highlight_color: HIGHLIGHT_COLORS[0],
+            sidebar_tab: SidebarTab::Thumbnails,
         }
     }
 }
@@ -89,6 +116,21 @@ impl Settings {
         s.window_maximized = db.setting_bool("window.maximized", false);
         s.smooth_scroll = db.setting_bool("scroll.smooth", true);
         s.page_fit_mode = ZoomMode::parse(&db.get_setting("fit.mode").ok().flatten().unwrap_or_default());
+        s.cache_mb = db
+            .setting_f64("cache.mb", s.cache_mb as f64)
+            .round()
+            .clamp(
+                (CACHE_BUDGET_MIN / (1024 * 1024)) as f64,
+                (CACHE_BUDGET_MAX / (1024 * 1024)) as f64,
+            ) as usize;
+        s.restore_session = db.setting_bool("session.restore", s.restore_session);
+        s.sidebar_tab = SidebarTab::parse(
+            &db.get_setting("sidebar.tab").ok().flatten().unwrap_or_default(),
+        );
+        s.highlight_color = db
+            .setting_f64("highlight.color", s.highlight_color as f64)
+            .round()
+            .max(0.0) as u32;
         s
     }
 
@@ -104,6 +146,15 @@ impl Settings {
         let _ = db.set_setting("window.maximized", if self.window_maximized { "1" } else { "0" });
         let _ = db.set_setting("scroll.smooth", if self.smooth_scroll { "1" } else { "0" });
         let _ = db.set_setting("fit.mode", self.page_fit_mode.as_str());
+        let _ = db.set_setting("cache.mb", &self.cache_mb.to_string());
+        let _ = db.set_setting("session.restore", if self.restore_session { "1" } else { "0" });
+        let _ = db.set_setting("highlight.color", &self.highlight_color.to_string());
+        let _ = db.set_setting("sidebar.tab", self.sidebar_tab.as_str());
+    }
+
+    /// The cache budget in bytes, clamped to the supported range.
+    pub fn cache_budget_bytes(&self) -> usize {
+        (self.cache_mb * 1024 * 1024).clamp(CACHE_BUDGET_MIN, CACHE_BUDGET_MAX)
     }
 }
 
@@ -114,6 +165,26 @@ pub enum SidebarTab {
     Outline,
     Search,
     Recent,
+}
+
+impl SidebarTab {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SidebarTab::Thumbnails => "thumbnails",
+            SidebarTab::Outline => "outline",
+            SidebarTab::Search => "search",
+            SidebarTab::Recent => "recent",
+        }
+    }
+
+    pub fn parse(text: &str) -> SidebarTab {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "outline" => SidebarTab::Outline,
+            "search" => SidebarTab::Search,
+            "recent" => SidebarTab::Recent,
+            _ => SidebarTab::Thumbnails,
+        }
+    }
 }
 
 impl Default for SidebarTab {
@@ -214,6 +285,8 @@ pub enum Action {
     OpenUrl(String),
     ResumeAnswer { resume: bool, remember: bool },
     PasswordSubmit(String),
+    /// The password prompt was dismissed: the document cannot be opened.
+    PasswordCancel(usize),
     DismissError,
     CloseDialog,
     ShowShortcuts(bool),
@@ -222,6 +295,8 @@ pub enum Action {
     SetResumePolicy(ResumePolicy),
     SetSmoothScroll(bool),
     SetHighlightColor(u32),
+    SetCacheBudget(usize),
+    SetRestoreSession(bool),
     GotoSearchHit(usize),
     ToggleOutline(String),
     PrintDocument,
@@ -264,14 +339,125 @@ pub struct Regions {
     pub status: Rect,
 }
 
-/// Application-wide performance counters (shown in the status bar).
-#[derive(Debug, Clone, Copy, Default)]
+/// Pressure level of the shared render cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryPressure {
+    Ok,
+    Elevated,
+    Critical,
+}
+
+impl MemoryPressure {
+    pub fn from_usage(used: usize, budget: usize) -> MemoryPressure {
+        if budget == 0 {
+            return MemoryPressure::Ok;
+        }
+        let ratio = used as f64 / budget as f64;
+        if ratio >= 0.92 {
+            MemoryPressure::Critical
+        } else if ratio >= 0.70 {
+            MemoryPressure::Elevated
+        } else {
+            MemoryPressure::Ok
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MemoryPressure::Ok => "ok",
+            MemoryPressure::Elevated => "elevated",
+            MemoryPressure::Critical => "critical",
+        }
+    }
+}
+
+/// A rotated copy that is being prepared for printing.
+///
+/// The file lives in a private temporary directory; when this struct is dropped
+/// the directory (and the copy inside it) is removed, so neither a failed export
+/// nor a crash between steps leaves the document behind in the temp folder.
+pub struct PendingPrint {
+    pub path: PathBuf,
+    /// Owning guard: dropping it deletes the directory and the copy inside it.
+    #[allow(dead_code)]
+    dir: crate::platform::tempfile::PrivateTempDir,
+}
+
+impl PendingPrint {
+    /// Creates the scratch directory and returns the path the copy is written to.
+    pub fn prepare() -> Result<PendingPrint, String> {
+        let dir = crate::platform::tempfile::PrivateTempDir::new("print")?;
+        let path = dir.file("rotated.pdf");
+        Ok(PendingPrint { path, dir })
+    }
+}
+
+/// Memory in use by one open document.
+#[derive(Debug, Clone)]
+pub struct DocumentMemory {
+    pub title: String,
+    pub bytes: usize,
+    pub pages: usize,
+    pub active: bool,
+}
+
+/// Snapshot of the global render-cache state, for the status bar and dialogs.
+#[derive(Debug, Clone)]
+pub struct MemoryStats {
+    pub budget: usize,
+    pub used: usize,
+    pub pressure: MemoryPressure,
+    pub evictions: u64,
+    pub pages: usize,
+    pub documents: Vec<DocumentMemory>,
+    pub peak_rss: u64,
+}
+
+impl MemoryStats {
+    pub fn used_mb(&self) -> f32 {
+        self.used as f32 / (1024.0 * 1024.0)
+    }
+
+    pub fn budget_mb(&self) -> f32 {
+        self.budget as f32 / (1024.0 * 1024.0)
+    }
+
+    /// 0..=1 fraction of the budget in use.
+    pub fn ratio(&self) -> f32 {
+        if self.budget == 0 {
+            0.0
+        } else {
+            (self.used as f32 / self.budget as f32).clamp(0.0, 1.0)
+        }
+    }
+}
+
+/// Application-wide counters shown in the status bar.
+#[derive(Debug, Clone, Copy)]
 pub struct PerfStats {
     pub startup_ms: f32,
     pub last_frame_ms: f32,
     pub last_render_ms: f32,
     pub cache_bytes: usize,
     pub pages_cached: usize,
+    pub cache_budget: usize,
+    pub pressure: MemoryPressure,
+    pub evictions: u64,
+}
+
+impl Default for PerfStats {
+    fn default() -> PerfStats {
+        PerfStats {
+            startup_ms: 0.0,
+            last_frame_ms: 0.0,
+            last_render_ms: 0.0,
+            cache_bytes: 0,
+            pages_cached: 0,
+            cache_budget: CACHE_BUDGET_DEFAULT,
+            pressure: MemoryPressure::Ok,
+            evictions: 0,
+        }
+    }
 }
 
 pub struct App {
@@ -313,9 +499,14 @@ pub struct App {
     pub busy: Option<String>,
     /// Active print job (Windows renders pages; Linux prints the file).
     pub print: Option<PrintState>,
-    /// Rotated copy waiting to be printed once the export finishes.
-    pub pending_print: Option<PathBuf>,
+    /// Rotated copy waiting to be printed once the export finishes. Holding the
+    /// scratch directory here is what guarantees the copy is deleted again.
+    pub pending_print: Option<PendingPrint>,
     pub mouse_in_content: bool,
+    /// Global page-cache budget in bytes (all documents together).
+    pub cache_budget: usize,
+    /// Set when the last run did not shut down cleanly.
+    pub recovered_session: bool,
 }
 
 impl App {
@@ -332,6 +523,22 @@ impl App {
             .unwrap_or_default();
         let show_sidebar = settings.sidebar_visible;
         let window = Size::new(settings.window.w, settings.window.h);
+        let settings_cache_budget = settings.cache_budget_bytes();
+        let settings_highlight_color = settings.highlight_color;
+        let settings_sidebar_tab = settings.sidebar_tab;
+        // A run that exited cleanly writes `session.clean = 1`; anything else
+        // means the last session ended unexpectedly, and the open documents are
+        // taken as they were.
+        let clean_shutdown = db
+            .as_ref()
+            .map(|db| db.setting_bool("session.clean", true))
+            .unwrap_or(true);
+        let recovered_session = !clean_shutdown;
+        // From here on the session is "in progress": if the process dies without
+        // reaching `save_all`, the next start knows the last run was cut short.
+        if let Some(db) = db.as_ref() {
+            let _ = db.set_setting("session.clean", "0");
+        }
         App {
             engine,
             db,
@@ -340,7 +547,10 @@ impl App {
             docs: Vec::new(),
             active: 0,
             ui: UiState::default(),
-            sidebar: SidebarState::default(),
+            sidebar: SidebarState {
+                tab: settings_sidebar_tab,
+                ..SidebarState::default()
+            },
             dialogs: Dialogs::default(),
             input: Input::default(),
             window,
@@ -359,7 +569,7 @@ impl App {
             started,
             last_time: 0.0,
             redraw: true,
-            highlight_color: 0xFFFFE066,
+            highlight_color: settings_highlight_color,
             engine_error,
             page_field: Default::default(),
             pending_initial_page: None,
@@ -367,6 +577,8 @@ impl App {
             print: None,
             pending_print: None,
             mouse_in_content: false,
+            cache_budget: settings_cache_budget,
+            recovered_session,
         }
     }
 
@@ -393,6 +605,104 @@ impl App {
     }
 
     /// Opens a document by path. Failures are reported as toasts/dialogs.
+    /// How hard the render cache is pressing against its budget.
+    pub fn memory_stats(&self) -> MemoryStats {
+        let used: usize = self.docs.iter().map(|d| d.memory_bytes()).sum();
+        let mut documents: Vec<DocumentMemory> = self
+            .docs
+            .iter()
+            .enumerate()
+            .map(|(index, doc)| DocumentMemory {
+                title: doc.title.clone(),
+                bytes: doc.memory_bytes(),
+                pages: doc.cache.len(),
+                active: index == self.active,
+            })
+            .collect();
+        documents.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        MemoryStats {
+            budget: self.cache_budget,
+            used,
+            pressure: MemoryPressure::from_usage(used, self.cache_budget),
+            evictions: self.docs.iter().map(|d| d.cache.evictions).sum(),
+            pages: self.docs.iter().map(|d| d.cache.len()).sum(),
+            documents,
+            peak_rss: crate::util::stats::peak_rss_bytes(),
+        }
+    }
+
+    /// Sets the global cache budget and applies it immediately.
+    pub fn set_cache_budget(&mut self, bytes: usize) {
+        self.cache_budget = bytes.clamp(CACHE_BUDGET_MIN, CACHE_BUDGET_MAX);
+        for doc in &mut self.docs {
+            doc.cache.set_limit(self.cache_budget);
+        }
+        self.enforce_cache_budget();
+    }
+
+    /// Keeps the *sum* of every document's page cache inside the global budget.
+    ///
+    /// Background documents are trimmed to a single page first (switching back is
+    /// still instant), then the active document gives up least-recently-used
+    /// pages that are not on screen. Under critical pressure thumbnails of the
+    /// background documents are dropped as well.
+    pub fn enforce_cache_budget(&mut self) {
+        let budget = self.cache_budget;
+        if budget == 0 || self.docs.is_empty() {
+            return;
+        }
+        let total: usize = self.docs.iter().map(|d| d.memory_bytes()).sum();
+        if total <= budget {
+            return;
+        }
+        // 1. Background documents: keep the page they were left on.
+        for index in 0..self.docs.len() {
+            if index == self.active {
+                continue;
+            }
+            let keep_page = self.docs[index].current_page();
+            self.docs[index]
+                .cache
+                .trim_to(INACTIVE_DOC_CACHE_BYTES, &[keep_page]);
+        }
+        let total: usize = self.docs.iter().map(|d| d.memory_bytes()).sum();
+        if total <= budget {
+            return;
+        }
+        // 2. Whatever is left must come out of the active document.
+        let protect: Vec<u32> = self
+            .active_doc()
+            .map(|doc| {
+                let mut pages = doc.layout.visible_pages();
+                let current = doc.current_page();
+                if !pages.contains(&current) {
+                    pages.push(current);
+                }
+                pages
+            })
+            .unwrap_or_default();
+        let active_bytes = self
+            .active_doc()
+            .map(|d| d.cache.memory_bytes())
+            .unwrap_or(0);
+        let others: usize = total - active_bytes;
+        let target = budget.saturating_sub(INACTIVE_DOC_CACHE_BYTES.min(others));
+        if let Some(doc) = self.active_doc_mut() {
+            doc.cache.trim_to(target.saturating_sub(others).max(1024 * 1024), &protect);
+        }
+        // 3. Still over budget: drop thumbnails of the background documents.
+        let total: usize = self.docs.iter().map(|d| d.memory_bytes()).sum();
+        if total > budget {
+            for index in 0..self.docs.len() {
+                if index == self.active {
+                    continue;
+                }
+                self.docs[index].thumbs.clear();
+                self.docs[index].pending_thumbs.clear();
+            }
+        }
+    }
+
     pub fn open_path(&mut self, path: PathBuf, password: Option<String>) {
         let path = if path.is_absolute() {
             path
@@ -453,7 +763,7 @@ impl App {
         }
         let id = self.next_doc_id;
         self.next_doc_id += 1;
-        let mut view = DocView::new(id, identity.clone(), row_id, session, CACHE_LIMIT_BYTES, now);
+        let mut view = DocView::new(id, identity.clone(), row_id, session, self.cache_budget, now);
         if let Some(row) = &row {
             view.highlights = self
                 .db
@@ -489,6 +799,7 @@ impl App {
         if self.docs.is_empty() {
             self.active = 0;
         }
+        self.save_open_documents();
         self.redraw = true;
     }
 
@@ -516,6 +827,12 @@ impl App {
     }
 
     /// Writes every dirty session (called periodically, on close and on quit).
+    /// Everything that has to be on disk before the process goes away.
+    ///
+    /// This is the *clean* shutdown path: it records the reading positions, the
+    /// preferences (including the window rectangle) and the set of open
+    /// documents, then marks the session as closed properly so the next start
+    /// knows nothing was lost.
     pub fn save_all(&mut self) {
         for i in 0..self.docs.len() {
             if self.docs[i].dirty || self.docs[i].row_id.is_some() {
@@ -523,8 +840,83 @@ impl App {
             }
         }
         if let Some(db) = &self.db {
+            self.save_open_documents();
             self.settings.save(db);
+            let _ = db.set_setting("session.clean", "1");
         }
+    }
+
+    /// Records the open documents (in tab order) and which tab is active.
+    pub fn save_open_documents(&self) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let open: Vec<(i64, bool)> = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, doc)| doc.row_id.map(|id| (id, index == self.active)))
+            .collect();
+        // Opening a document for the first time can leave `row_id` unset for a
+        // frame; skipping those entries is better than moving the active flag.
+        let _ = db.save_open_documents(&open);
+    }
+
+    /// Re-opens the documents from the previous session, in tab order.
+    ///
+    /// Called once at startup when the preference is on and no document was
+    /// given on the command line. Documents that have disappeared are skipped
+    /// (and dropped from the saved list) instead of showing an error dialog for
+    /// each one.
+    pub fn restore_session(&mut self) -> usize {
+        if !self.settings.restore_session || !self.docs.is_empty() {
+            return 0;
+        }
+        let Some(db) = &self.db else {
+            return 0;
+        };
+        let saved = db.open_documents().unwrap_or_default();
+        if saved.is_empty() {
+            return 0;
+        }
+        let mut active: Option<usize> = None;
+        let mut restored = 0;
+        let mut missing: Vec<i64> = Vec::new();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for (row_id, is_active) in &saved {
+            match db.document_by_id(*row_id) {
+                Ok(Some(row)) => {
+                    let path = PathBuf::from(&row.path);
+                    if !path.is_file() {
+                        missing.push(*row_id);
+                        continue;
+                    }
+                    if paths.iter().any(|p| identity::canonical_path(p) == identity::canonical_path(&path)) {
+                        continue;
+                    }
+                    paths.push(path);
+                    if *is_active {
+                        active = Some(restored);
+                    }
+                    restored += 1;
+                }
+                _ => missing.push(*row_id),
+            }
+        }
+        for row_id in missing {
+            let _ = db.forget_document(row_id);
+        }
+        if restored == 0 {
+            return 0;
+        }
+        for path in paths {
+            self.open_path(path, None);
+        }
+        if let Some(index) = active {
+            self.active = index.min(self.docs.len().saturating_sub(1));
+        }
+        self.redraw = true;
+        restored.min(self.docs.len())
     }
 
     fn refresh_recent(&mut self) {
@@ -628,14 +1020,22 @@ impl App {
                             let printing = self
                                 .pending_print
                                 .as_ref()
-                                .map(|p| p.to_string_lossy() == path)
+                                .map(|p| p.path.to_string_lossy() == path)
                                 .unwrap_or(false);
                             if printing {
                                 let title = self
                                     .active_doc()
                                     .map(|d| d.title.clone())
                                     .unwrap_or_else(|| "document".to_string());
+                                // The copy exists only for the spooler: restrict
+                                // it to this user, hand it over, then drop the
+                                // guard so the file is deleted again.
+                                let pending = self.pending_print.take();
+                                let _ = crate::platform::tempfile::restrict_to_owner(
+                                    std::path::Path::new(&path),
+                                );
                                 self.start_print(std::path::Path::new(&path), &title);
+                                drop(pending);
                             } else {
                                 self.toast(ToastLevel::Info, format!("Saved a copy to {}", path));
                             }
@@ -723,26 +1123,40 @@ impl App {
                     }
                 }
                 // Kick off the metadata requests for the first visible pages.
+                self.save_open_documents();
                 self.engine.send(PdfCommand::Outline { id, token: 1 });
                 self.docs[index].outline_requested = true;
                 self.request_visible_text();
                 self.refresh_recent();
             }
             Err(message) => {
-                let needs_password = message.to_lowercase().contains("password");
-                let doc = &mut self.docs[index];
-                doc.error = Some(message.clone());
-                if needs_password {
-                    doc.state = DocState::NeedsPassword;
-                    self.dialogs.password = Some(PasswordDialog {
-                        doc_index: index,
-                        document: doc.identity.display_name.clone(),
-                        field: Default::default(),
-                        error: None,
-                    });
-                } else {
-                    doc.state = DocState::Failed(message.clone());
-                    self.error_dialog("Cannot open document", message);
+                use crate::pdf::engine::{classify_open_error, OpenFailure};
+                let document = self.docs[index].identity.display_name.clone();
+                match classify_open_error(&message) {
+                    OpenFailure::PasswordRequired | OpenFailure::WrongPassword => {
+                        let wrong = classify_open_error(&message) == OpenFailure::WrongPassword;
+                        let doc = &mut self.docs[index];
+                        doc.error = Some(message.clone());
+                        doc.state = DocState::NeedsPassword;
+                        // A rejected password keeps the dialog open with the
+                        // field cleared, so the user can simply try again.
+                        self.dialogs.password = Some(PasswordDialog {
+                            doc_index: index,
+                            document,
+                            field: Default::default(),
+                            error: if wrong {
+                                Some("That password did not unlock the document. Try again.".to_string())
+                            } else {
+                                None
+                            },
+                        });
+                    }
+                    OpenFailure::Other => {
+                        let doc = &mut self.docs[index];
+                        doc.error = Some(message.clone());
+                        doc.state = DocState::Failed(message.clone());
+                        self.error_dialog("Cannot open document", message);
+                    }
                 }
             }
         }
@@ -1220,6 +1634,10 @@ impl App {
             self.sidebar.tab = tab;
         }
         self.settings.sidebar_visible = self.show_sidebar;
+        self.settings.sidebar_tab = self.sidebar.tab;
+        if let Some(db) = &self.db {
+            self.settings.save(db);
+        }
     }
 
     pub fn rotate(&mut self, delta: i32) {
@@ -1342,11 +1760,14 @@ impl App {
         let id = doc.id;
         let path = doc.identity.path.clone();
         if rotation != 0 {
-            let dest = std::env::temp_dir().join(format!(
-                "pdf-rust-print-{}-{}.pdf",
-                std::process::id(),
-                self.next_token
-            ));
+            let pending = match PendingPrint::prepare() {
+                Ok(pending) => pending,
+                Err(e) => {
+                    self.toast(ToastLevel::Error, format!("Printing failed: {}", e));
+                    return;
+                }
+            };
+            let dest = pending.path.clone();
             let rotations: Vec<(u32, u16)> = if all_pages {
                 (0..page_count).map(|p| (p, rotation)).collect()
             } else {
@@ -1359,7 +1780,7 @@ impl App {
                 dest: dest.clone(),
                 token,
             });
-            self.pending_print = Some(dest);
+            self.pending_print = Some(pending);
             self.busy = Some("Preparing the print copy…".to_string());
             self.toast(ToastLevel::Info, "Preparing a rotated copy for printing…");
             return;
@@ -1369,7 +1790,6 @@ impl App {
 
     /// Starts a print job for `path` (already in the right orientation).
     fn start_print(&mut self, path: &std::path::Path, title: &str) {
-        self.pending_print = None;
         let job = match crate::platform::print::PrintJob::start(path, title) {
             Ok(job) => job,
             Err(e) => {
@@ -1537,8 +1957,9 @@ impl App {
             }
             Action::CloseDoc(index) => self.close_doc(index),
             Action::ActivateDoc(index) => {
-                if index < self.docs.len() {
+                if index < self.docs.len() && index != self.active {
                     self.active = index;
+                    self.save_open_documents();
                 }
             }
             Action::SetSidebarTab(tab) => {
@@ -1547,6 +1968,10 @@ impl App {
                 if !self.show_sidebar {
                     self.show_sidebar = true;
                     self.settings.sidebar_visible = true;
+                }
+                self.settings.sidebar_tab = tab;
+                if let Some(db) = &self.db {
+                    self.settings.save(db);
                 }
             }
             Action::ToggleSidebar => self.handle_command(Command::ToggleSidebar),
@@ -1654,6 +2079,12 @@ impl App {
                     self.fullscreen = false;
                 }
             }
+            Action::PasswordCancel(index) => {
+                self.dialogs.password = None;
+                if index < self.docs.len() {
+                    self.close_doc(index);
+                }
+            }
             Action::CloseDialog => self.dialogs.close_all(),
             Action::ShowShortcuts(show) => self.dialogs.shortcuts = show,
             Action::ForgetDocument(row_id) => {
@@ -1674,8 +2105,32 @@ impl App {
                     self.settings.save(db);
                 }
             }
+            Action::SetCacheBudget(mb) => {
+                self.settings.cache_mb = mb.clamp(
+                    CACHE_BUDGET_MIN / (1024 * 1024),
+                    CACHE_BUDGET_MAX / (1024 * 1024),
+                );
+                self.set_cache_budget(self.settings.cache_budget_bytes());
+                if let Some(db) = &self.db {
+                    self.settings.save(db);
+                }
+                self.toast(
+                    ToastLevel::Info,
+                    format!("Cache budget set to {} MB (all documents)", self.settings.cache_mb),
+                );
+            }
+            Action::SetRestoreSession(on) => {
+                self.settings.restore_session = on;
+                if let Some(db) = &self.db {
+                    self.settings.save(db);
+                }
+            }
             Action::SetHighlightColor(color) => {
                 self.highlight_color = color;
+                self.settings.highlight_color = color;
+                if let Some(db) = &self.db {
+                    self.settings.save(db);
+                }
                 if let Some(db) = &self.db {
                     let _ = db.set_setting("highlight.color", &format!("{:08X}", color));
                 }
@@ -1783,8 +2238,12 @@ impl App {
             self.request_links(page);
         }
         self.toasts.retain(|t| now - t.created < TOAST_LIFETIME);
+        self.enforce_cache_budget();
         self.perf.cache_bytes = self.docs.iter().map(|d| d.memory_bytes()).sum();
         self.perf.pages_cached = self.docs.iter().map(|d| d.cache.len()).sum();
+        self.perf.cache_budget = self.cache_budget;
+        self.perf.pressure = self.memory_stats().pressure;
+        self.perf.evictions = self.docs.iter().map(|d| d.cache.evictions).sum();
     }
 
     /// True while something on screen is animating (spinners) so the shell keeps
@@ -1832,11 +2291,30 @@ impl App {
             self.redraw = true;
         }
 
-        // Global shortcuts first (unless a text field owns the keyboard focus).
+        // Tab and Shift+Tab walk the controls on screen — even out of a text
+        // field, which is what keyboard users expect. Ctrl+Tab keeps switching
+        // documents instead.
         let typing = self.ui.focus.map(is_text_focus).unwrap_or(false);
+        if !input.ctrl && input.key_pressed(Key::Tab) {
+            self.ui.step_focus(if input.shift { -1 } else { 1 });
+            self.redraw = true;
+        }
+        // Enter or Space presses the control that has the focus.
+        if !typing && self.ui.focus_activatable {
+            if input.key_pressed(Key::Enter) || input.key_pressed(Key::Space) {
+                self.ui.set_activate_key();
+                self.redraw = true;
+            }
+        }
+
+        // Global shortcuts first (unless a text field owns the keyboard focus).
         if !typing {
-            if let Some(cmd) = commands::command_for_input(input) {
-                self.handle_command(cmd);
+            // Space belongs to the focused control when there is one.
+            let space_owned = input.key_pressed(Key::Space) && self.ui.focus_activatable;
+            if !space_owned {
+                if let Some(cmd) = commands::command_for_input(input) {
+                    self.handle_command(cmd);
+                }
             }
             if input.key_pressed(Key::Escape) && !self.dialogs.any() {
                 if self.presentation {
@@ -1881,6 +2359,7 @@ impl App {
         bmp.clear(theme.window_bg);
 
         let mut actions: Vec<Action> = Vec::new();
+        let memory = self.memory_stats();
         {
             let mut ui = Ui::new(bmp, font, theme, input, &mut self.ui);
             let mut chrome = crate::ui::chrome::Chrome {
@@ -1895,6 +2374,7 @@ impl App {
                 presentation: self.presentation,
                 show_sidebar: self.show_sidebar,
                 perf: &self.perf,
+                memory: &memory,
                 busy: &self.busy,
                 note: &self.note,
                 engine_error: &self.engine_error,
@@ -1907,6 +2387,7 @@ impl App {
             crate::ui::chrome::paint(&mut ui, &mut chrome);
             ui.draw_tooltip();
         }
+        self.ui.end_frame();
         if let Some(text) = self.ui.clipboard_set.take() {
             actions.push(Action::CopyText(text));
         }
@@ -2089,6 +2570,55 @@ mod tests {
         assert!((loaded.sidebar_width - 300.0).abs() < 0.1);
         assert_eq!(loaded.resume_policy, ResumePolicy::Never);
         assert!((loaded.window.w - 900.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn memory_pressure_bands() {
+        assert_eq!(MemoryPressure::from_usage(0, 0), MemoryPressure::Ok);
+        assert_eq!(MemoryPressure::from_usage(0, 100), MemoryPressure::Ok);
+        assert_eq!(MemoryPressure::from_usage(69, 100), MemoryPressure::Ok);
+        assert_eq!(MemoryPressure::from_usage(70, 100), MemoryPressure::Elevated);
+        assert_eq!(MemoryPressure::from_usage(91, 100), MemoryPressure::Elevated);
+        assert_eq!(MemoryPressure::from_usage(92, 100), MemoryPressure::Critical);
+        assert_eq!(MemoryPressure::from_usage(200, 100), MemoryPressure::Critical);
+        assert_eq!(MemoryPressure::Critical.label(), "critical");
+    }
+
+    #[test]
+    fn the_cache_budget_is_clamped_and_persisted() {
+        let db = Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+        let mut app = App::new(Engine::start(), Some(db), None);
+        assert_eq!(app.cache_budget, CACHE_BUDGET_DEFAULT);
+        app.set_cache_budget(1);
+        assert_eq!(app.cache_budget, CACHE_BUDGET_MIN, "clamped up");
+        app.set_cache_budget(usize::MAX);
+        assert_eq!(app.cache_budget, CACHE_BUDGET_MAX, "clamped down");
+        // The setting round-trips through the database, and a bad value is
+        // clamped when it is read back.
+        app.settings.cache_mb = 320;
+        app.settings.save(app.db.as_ref().unwrap());
+        let loaded = Settings::load(app.db.as_ref().unwrap());
+        assert_eq!(loaded.cache_mb, 320);
+        assert_eq!(loaded.cache_budget_bytes(), 320 * 1024 * 1024);
+        let mut bad = Settings::default();
+        bad.cache_mb = 0;
+        assert_eq!(bad.cache_budget_bytes(), CACHE_BUDGET_MIN);
+    }
+
+    #[test]
+    fn an_empty_app_reports_zero_memory() {
+        let mut app = App::new(Engine::start(), None, None);
+        app.docs.clear();
+        let stats = app.memory_stats();
+        assert_eq!(stats.used, 0);
+        assert_eq!(stats.pages, 0);
+        assert_eq!(stats.evictions, 0);
+        assert_eq!(stats.pressure, MemoryPressure::Ok);
+        assert_eq!(stats.ratio(), 0.0);
+        assert!((stats.budget_mb() - CACHE_BUDGET_DEFAULT as f32 / (1024.0 * 1024.0)).abs() < 0.5);
+        // Enforcing the budget without documents is a no-op.
+        app.enforce_cache_budget();
     }
 
     #[test]

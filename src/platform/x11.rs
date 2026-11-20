@@ -334,6 +334,7 @@ declare_xlib! {
     fn XCloseDisplay(dpy: *mut Display) -> c_int;
     fn XDefaultScreen(dpy: *mut Display) -> c_int;
     fn XRootWindow(dpy: *mut Display, screen: c_int) -> Window;
+    fn XDefaultRootWindow(dpy: *mut Display) -> Window;
     fn XDefaultDepth(dpy: *mut Display, screen: c_int) -> c_int;
     fn XDefaultVisual(dpy: *mut Display, screen: c_int) -> *mut Visual;
     fn XConnectionNumber(dpy: *mut Display) -> c_int;
@@ -353,6 +354,16 @@ declare_xlib! {
     ) -> Window;
     fn XDestroyWindow(dpy: *mut Display, window: Window) -> c_int;
     fn XMapWindow(dpy: *mut Display, window: Window) -> c_int;
+    fn XTranslateCoordinates(
+        dpy: *mut Display,
+        src: Window,
+        dest: Window,
+        src_x: c_int,
+        src_y: c_int,
+        dest_x: *mut c_int,
+        dest_y: *mut c_int,
+        child: *mut Window,
+    ) -> c_int;
     fn XSelectInput(dpy: *mut Display, window: Window, mask: c_long) -> c_int;
     fn XSetWindowBackground(dpy: *mut Display, window: Window, pixel: c_ulong) -> c_int;
     fn XStoreName(dpy: *mut Display, window: Window, name: *const c_char) -> c_int;
@@ -512,7 +523,7 @@ struct Shell {
 }
 
 impl Shell {
-    fn open(width: u32, height: u32, title: &str) -> Result<Shell, String> {
+    fn open(left: i32, top: i32, width: u32, height: u32, title: &str) -> Result<Shell, String> {
         let x = Xlib::load()?;
         // SAFETY: every call below follows the Xlib contract; pointers come from
         // Xlib itself except the image buffer, which we own and outlive.
@@ -533,8 +544,8 @@ impl Shell {
             let window = x.XCreateWindow(
                 dpy,
                 root,
-                80,
-                60,
+                left,
+                top,
                 width,
                 height,
                 0,
@@ -831,6 +842,31 @@ impl Shell {
         }
     }
 
+    /// The window's position on the root window, as the window manager placed it.
+    fn root_position(&self) -> Option<(i32, i32)> {
+        let mut x = 0i32;
+        let mut y = 0i32;
+        let mut child: Window = 0;
+        // SAFETY: the display and window are valid for the shell's lifetime.
+        let ok = unsafe {
+            self.x.XTranslateCoordinates(
+                self.dpy,
+                self.window,
+                self.x.XDefaultRootWindow(self.dpy),
+                0,
+                0,
+                &mut x,
+                &mut y,
+                &mut child,
+            )
+        };
+        if ok == 0 {
+            None
+        } else {
+            Some((x, y))
+        }
+    }
+
     fn handle(&mut self, event: &XEvent, input: &mut Input, app: &mut App) {
         match event.kind() {
             KEY_PRESS | KEY_RELEASE => {
@@ -933,6 +969,16 @@ impl Shell {
                     self.resize(ev.width as u32, ev.height as u32);
                     app.redraw = true;
                 }
+                // Remember where the window manager put us, so the next start
+                // can reopen in the same place.
+                if let Some((x, y)) = self.root_position() {
+                    app.settings.window = crate::geom::Rect::new(
+                        x as f32,
+                        y as f32,
+                        app.window.w,
+                        app.window.h,
+                    );
+                }
             }
             EXPOSE => {
                 app.redraw = true;
@@ -992,7 +1038,11 @@ fn atom(x: &Xlib, dpy: *mut Display, name: &str) -> Atom {
 pub fn run(mut app: App, font: Font) -> Result<(), String> {
     let width = app.window.w.max(640.0) as u32;
     let height = app.window.h.max(420.0) as u32;
+    // Reopen where the user left the window, if the position is on screen.
+    let (x, y) = (app.settings.window.x.max(0.0) as i32, app.settings.window.y.max(0.0) as i32);
     let mut shell = Shell::open(
+        x,
+        y,
         width,
         height,
         &crate::platform::window_title(app.active_doc().map(|d| d.title.as_str())),
@@ -1039,6 +1089,11 @@ pub fn run(mut app: App, font: Font) -> Result<(), String> {
             last_draw = std::time::Instant::now();
         }
         if app.quit {
+            // State is written before the window goes away so a slow disk cannot
+            // cost the user their session.
+            app.settings.window =
+                crate::geom::Rect::new(app.settings.window.x, app.settings.window.y, app.window.w, app.window.h);
+            app.save_all();
             break;
         }
 

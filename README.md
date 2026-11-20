@@ -35,6 +35,14 @@ painted by the viewer itself with `pdf-rust --screenshot`; see
 
 ## Status
 
+**0.2.0** adds one shared memory budget for every open document (with pressure
+feedback in the status bar and a diagnostics panel), full session recovery (tabs,
+order, active tab, sidebar, window rectangle, crash detection), keyboard focus
+traversal with a visible ring, glyph fallback for text the embedded font cannot
+draw, and a hardened PDF boundary (one-time PDFium init/shutdown, page-count cap,
+typed password errors, private `0700`/`0600` print scratch files). See the
+[0.2.0 release notes](docs/release-0.2.0.md).
+
 Milestones 1–5 of the plan in [`DEVELOPMENT.md`](DEVELOPMENT.md) are implemented:
 architecture, PDFium rendering, navigation/zoom/rotation, SQLite-backed reading
 positions and the viewer chrome (thumbnails, outline, search, recent files) on
@@ -131,8 +139,8 @@ build, 1180×860 window (numbers from [`docs/testing.md`](docs/testing.md)):
 | toolbar | ~0.2 ms |
 | status bar | ~0.05 ms |
 | PDFium page render | ~0.1–0.3 ms |
-| peak memory | ~18 MB |
-| render cache | ~7 MB of the 192 MB budget |
+| peak memory | ~19 MB |
+| render cache | ~7 MB of the 192 MiB budget shared by all documents |
 
 Getting there meant removing three invisible costs (stroking that visited every
 pixel of the page box, full-rectangle shadows, resampling thumbnails every frame);

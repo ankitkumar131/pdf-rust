@@ -545,6 +545,83 @@ struct GlyphKey {
     bold: bool,
 }
 
+/// What gets drawn for one character that is not in the font verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fallback {
+    /// Nothing at all (zero width).
+    None,
+    One(char),
+    Two(char, char),
+}
+
+impl Fallback {
+    /// The characters to draw, in order (at most two, no allocation).
+    fn chars(self) -> std::iter::Take<std::array::IntoIter<char, 2>> {
+        let (a, b, count) = match self {
+            Fallback::None => ('\0', '\0', 0),
+            Fallback::One(a) => (a, '\0', 1),
+            Fallback::Two(a, b) => (a, b, 2),
+        };
+        [a, b].into_iter().take(count)
+    }
+}
+
+/// Combining diacritical marks: they modify the previous glyph and have no
+/// advance of their own, so the only sensible fallback is to drop them.
+fn is_combining_mark(ch: char) -> bool {
+    matches!(ch as u32, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
+}
+
+/// The base letter of an accented Latin character, when there is a simple one.
+fn fold_accented(ch: char) -> Option<char> {
+    let base = match ch {
+        'À'..='Å' | 'Ā' | 'Ă' | 'Ą' => 'A',
+        'Æ' => return Some('E'),
+        'Ç' | 'Ć' | 'Ĉ' | 'Ċ' | 'Č' => 'C',
+        'Ď' | 'Đ' => 'D',
+        'È'..='Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => 'E',
+        'Ĝ' | 'Ğ' | 'Ġ' | 'Ģ' => 'G',
+        'Ĥ' | 'Ħ' => 'H',
+        'Ì'..='Ï' | 'Ĩ' | 'Ī' | 'Ĭ' | 'Į' | 'İ' => 'I',
+        'Ĵ' => 'J',
+        'Ķ' => 'K',
+        'Ĺ' | 'Ļ' | 'Ľ' | 'Ŀ' | 'Ł' => 'L',
+        'Ñ' | 'Ń' | 'Ņ' | 'Ň' => 'N',
+        'Ò'..='Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' => 'O',
+        'Œ' => return Some('E'),
+        'Ŕ' | 'Ŗ' | 'Ř' => 'R',
+        'Ś' | 'Ŝ' | 'Ş' | 'Š' => 'S',
+        'Ţ' | 'Ť' | 'Ŧ' => 'T',
+        'Ù'..='Ü' | 'Ũ' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => 'U',
+        'Ŵ' => 'W',
+        'Ý' | 'Ŷ' | 'Ÿ' => 'Y',
+        'Ź' | 'Ż' | 'Ž' => 'Z',
+        'à'..='å' | 'ā' | 'ă' | 'ą' => 'a',
+        'æ' => return Some('e'),
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+        'ď' | 'đ' => 'd',
+        'è'..='ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+        'ĥ' | 'ħ' => 'h',
+        'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+        'ĵ' => 'j',
+        'ķ' => 'k',
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
+        'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+        'ò'..='ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'œ' => return Some('e'),
+        'ŕ' | 'ŗ' | 'ř' => 'r',
+        'ś' | 'ŝ' | 'ş' | 'š' => 's',
+        'ţ' | 'ť' | 'ŧ' => 't',
+        'ù'..='ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'ŵ' => 'w',
+        'ý' | 'ÿ' | 'ŷ' => 'y',
+        'ź' | 'ż' | 'ž' => 'z',
+        _ => return None,
+    };
+    Some(base)
+}
+
 /// A font instance with a glyph cache.
 pub struct Font {
     face: Face,
@@ -583,12 +660,62 @@ impl Font {
         (self.face.ascender - self.face.descender + self.face.line_gap) / self.face.units_per_em * px
     }
 
+    /// The characters that actually get drawn for one source character.
+    ///
+    /// The embedded font covers Latin, Greek, Cyrillic and Hebrew but not, for
+    /// instance, CJK or Arabic. Rather than dropping those characters (which
+    /// would make text jump around and lose information), each one is mapped to
+    /// something the font does have:
+    ///
+    /// * a glyph that exists is used as-is,
+    /// * combining marks that would otherwise print as boxes are skipped,
+    /// * typographic punctuation and ligatures fall back to ASCII equivalents,
+    /// * accented letters fall back to their base letter,
+    /// * everything else keeps its code point, which draws the font's `.notdef`
+    ///   box — the standard "this glyph is missing" marker.
+    fn drawable(&self, ch: char) -> Fallback {
+        if self.face.glyph_index(ch) != 0 {
+            return Fallback::One(ch);
+        }
+        if is_combining_mark(ch) {
+            return Fallback::None;
+        }
+        match ch {
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => return Fallback::One('\''),
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => return Fallback::One('"'),
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2212}' => {
+                return Fallback::One('-')
+            }
+            '\u{2015}' | '\u{2500}' => return Fallback::One('-'),
+            '\u{2026}' => return Fallback::Two('.', '.'),
+            '\u{FB01}' => return Fallback::Two('f', 'i'),
+            '\u{FB02}' => return Fallback::Two('f', 'l'),
+            '\u{FB00}' => return Fallback::Two('f', 'f'),
+            '\u{FB03}' => return Fallback::Two('f', 'i'),
+            '\u{FB04}' => return Fallback::Two('f', 'l'),
+            '\u{00A0}' | '\u{2007}' | '\u{202F}' | '\u{2009}' | '\u{200A}' => {
+                return Fallback::One(' ')
+            }
+            '\u{200B}' | '\u{FEFF}' => return Fallback::None,
+            '\u{00AD}' => return Fallback::One('-'),
+            _ => {}
+        }
+        if let Some(base) = fold_accented(ch) {
+            if self.face.glyph_index(base) != 0 {
+                return Fallback::One(base);
+            }
+        }
+        Fallback::One(ch)
+    }
+
     /// Width of `text` in pixels at `px` size.
     pub fn text_width(&self, text: &str, px: f32) -> f32 {
         let scale = px / self.face.units_per_em;
         let mut w = 0.0;
         for ch in text.chars() {
-            w += self.face.advance_units(self.face.glyph_index(ch)) * scale;
+            for c in self.drawable(ch).chars() {
+                w += self.face.advance_units(self.face.glyph_index(c)) * scale;
+            }
         }
         w
     }
@@ -724,13 +851,15 @@ impl Font {
         let base = baseline.round();
         let bold = false;
         for ch in text.chars() {
-            let g = self.glyph(ch, px, bold);
-            if g.width > 0 {
-                let gx = pen as i32 + g.left;
-                let gy = base as i32 + g.top;
-                blit_glyph(canvas, &g, gx, gy, color);
+            for c in self.drawable(ch).chars() {
+                let g = self.glyph(c, px, bold);
+                if g.width > 0 {
+                    let gx = pen as i32 + g.left;
+                    let gy = base as i32 + g.top;
+                    blit_glyph(canvas, &g, gx, gy, color);
+                }
+                pen += g.advance.round().max(0.0);
             }
-            pen += g.advance.round().max(0.0);
         }
         pen - x.round()
     }
@@ -992,5 +1121,64 @@ mod tests {
     fn bogus_font_data_is_rejected() {
         let data: &'static [u8] = Box::leak(vec![0u8; 64].into_boxed_slice());
         assert!(Face::parse(data).is_err());
+    }
+
+    #[test]
+    fn missing_script_falls_back_to_a_visible_box_instead_of_vanishing() {
+        let font = Font::ui();
+        // The embedded font has no CJK glyphs: the character must still take up
+        // space (the .notdef box), so mixed text keeps its layout.
+        let cjk = font.text_width("\u{4E2D}", 14.0);
+        assert!(cjk > 0.0, "an unsupported character still has an advance");
+        let notdef = font.face().advance_units(font.face().glyph_index('\u{4E2D}'))
+            * 14.0
+            / font.face().units_per_em();
+        assert!((cjk - notdef).abs() < 0.01);
+        // A string of unsupported characters is not narrower than one character.
+        assert!(font.text_width("\u{4E2D}\u{6587}", 14.0) > cjk);
+    }
+
+    #[test]
+    fn available_characters_are_drawn_unchanged() {
+        let font = Font::ui();
+        // Whatever the font has, it is used verbatim: the fallback must never
+        // change text that already renders.
+        for ch in ['a', 'Z', 'é', 'ß', 'Ω', 'ж', '\u{201C}', '-', '@'] {
+            if font.face().glyph_index(ch) != 0 {
+                assert_eq!(font.drawable(ch), Fallback::One(ch), "glyph for {ch:?} is kept");
+            }
+        }
+        // A character the font does not have still advances the pen (the box).
+        let unknown = '\u{4E2D}';
+        assert!(font.face().glyph_index(unknown) == 0, "the test needs a missing glyph");
+        assert!(font.drawable(unknown).chars().count() >= 1);
+    }
+
+    #[test]
+    fn ligatures_expand_to_their_letters() {
+        let font = Font::ui();
+        let px = 14.0;
+        // A ligature is either drawn by the font or expanded into its letters;
+        // it is never zero width.
+        assert!(font.text_width("\u{FB01}", px) > 0.0);
+        // Unicode normalisation of "é" (e + combining acute) must not print a box
+        // and must not change the width of the letter.
+        let combined = font.text_width("e\u{301}", px);
+        assert!(
+            (combined - font.text_width("e", px)).abs() < 0.01,
+            "combining marks add no width"
+        );
+    }
+
+    #[test]
+    fn accented_letters_fall_back_to_their_base_letter() {
+        assert_eq!(fold_accented('é'), Some('e'));
+        assert_eq!(fold_accented('Ä'), Some('A'));
+        assert_eq!(fold_accented('ž'), Some('z'));
+        assert_eq!(fold_accented('中'), None);
+        assert!(is_combining_mark('\u{301}'));
+        assert!(!is_combining_mark('e'));
+        assert_eq!(Fallback::Two('f', 'i').chars().collect::<String>(), "fi");
+        assert_eq!(Fallback::None.chars().count(), 0);
     }
 }

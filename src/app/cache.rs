@@ -25,6 +25,9 @@ pub struct PageCache {
     clock: u64,
     pub hits: u64,
     pub misses: u64,
+    /// Pages dropped to stay inside the budget (per document, but the global
+    /// budget is enforced by [`crate::app::App::enforce_cache_budget`]).
+    pub evictions: u64,
 }
 
 impl PageCache {
@@ -36,6 +39,7 @@ impl PageCache {
             clock: 1,
             hits: 0,
             misses: 0,
+            evictions: 0,
         }
     }
 
@@ -146,6 +150,71 @@ impl PageCache {
         self.bytes = 0;
     }
 
+    /// Keys currently cached, oldest first.
+    pub fn pages(&self) -> Vec<u32> {
+        let mut keys: Vec<(&RenderKey, &Entry)> = self.entries.iter().collect();
+        keys.sort_by_key(|(_, entry)| entry.last_used);
+        keys.iter().map(|(key, _)| key.page).collect()
+    }
+
+    /// Page of the most recently used entry.
+    pub fn newest_page(&self) -> Option<u32> {
+        self.entries
+            .iter()
+            .max_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| key.page)
+    }
+
+    /// Drops least-recently-used entries until at most `target` bytes are cached.
+    ///
+    /// Pages listed in `protect` are never dropped (the pages on screen), and at
+    /// least one entry is always kept so the visible page cannot disappear.
+    /// Returns the number of bytes freed.
+    pub fn trim_to(&mut self, target: usize, protect: &[u32]) -> usize {
+        let before = self.bytes;
+        let mut order: Vec<(u64, RenderKey, usize)> = self
+            .entries
+            .iter()
+            .map(|(key, entry)| (entry.last_used, *key, entry.bytes))
+            .collect();
+        order.sort_by_key(|(last_used, _, _)| *last_used);
+        for (last_used, key, bytes) in order {
+            if self.bytes <= target {
+                break;
+            }
+            if self.entries.len() <= 1 || protect.contains(&key.page) {
+                continue;
+            }
+            // Never drop the newest entry either: it is the page being shown.
+            if self.newest_last_used() == Some(last_used) {
+                continue;
+            }
+            self.entries.remove(&key);
+            self.bytes = self.bytes.saturating_sub(bytes);
+            self.evictions += 1;
+        }
+        before - self.bytes
+    }
+
+    fn newest_last_used(&self) -> Option<u64> {
+        self.entries.values().map(|entry| entry.last_used).max()
+    }
+
+    /// Drops every cached page that is not in `keep` (used when a document goes
+    /// to the background).
+    pub fn keep_only(&mut self, keep: &[u32]) -> usize {
+        let before = self.bytes;
+        self.entries.retain(|key, entry| {
+            let keep_it = keep.contains(&key.page);
+            if !keep_it {
+                self.bytes = self.bytes.saturating_sub(entry.bytes);
+                self.evictions += 1;
+            }
+            keep_it
+        });
+        before - self.bytes
+    }
+
     fn evict(&mut self) {
         // Always keep the most recently used page, even if a single bitmap is
         // bigger than the whole budget: evicting it would make the viewer
@@ -165,6 +234,7 @@ impl PageCache {
                 Some(key) if Some(key) != newest => {
                     if let Some(entry) = self.entries.remove(&key) {
                         self.bytes = self.bytes.saturating_sub(entry.bytes);
+                        self.evictions += 1;
                     }
                 }
                 _ => break,
@@ -267,5 +337,64 @@ mod tests {
         assert!(cache.contains(&RenderKey::new(0, 3.0, 0)));
         assert!(!cache.contains(&RenderKey::new(0, 1.0, 0)));
         assert!(!cache.contains(&RenderKey::new(9, 3.0, 0)));
+    }
+
+    #[test]
+    fn trim_to_frees_the_least_recently_used_pages_first() {
+        let mut cache = PageCache::new(64 * 1024 * 1024);
+        // 4 MB per page, ten pages = 40 MB.
+        for page in 0..10u32 {
+            cache.insert(RenderKey::new(page, 1.0, 0), bmp(1000, 1000));
+        }
+        assert_eq!(cache.pages(), (0..10).collect::<Vec<u32>>());
+        let freed = cache.trim_to(20 * 1024 * 1024, &[]);
+        assert!(freed > 0, "something was freed");
+        assert!(
+            cache.memory_bytes() <= 20 * 1024 * 1024,
+            "trimmed to {} bytes",
+            cache.memory_bytes()
+        );
+        // Only as much as needed: the remainder fits one more 4 MB page either way.
+        assert!(freed >= 16 * 1024 * 1024 && freed <= 24 * 1024 * 1024, "freed {freed}");
+        // The newest page is always kept, even without protection.
+        assert!(cache.contains(&RenderKey::new(9, 1.0, 0)));
+        assert!(!cache.contains(&RenderKey::new(0, 1.0, 0)));
+        assert_eq!(cache.evictions, 5);
+    }
+
+    #[test]
+    fn trim_to_never_drops_protected_pages() {
+        let mut cache = PageCache::new(64 * 1024 * 1024);
+        for page in 0..8u32 {
+            cache.insert(RenderKey::new(page, 1.0, 0), bmp(1000, 1000));
+            // Touch page 2 so it is the most recently used one.
+            if page == 2 {
+                cache.get(&RenderKey::new(2, 1.0, 0));
+            }
+        }
+        cache.trim_to(8 * 1024 * 1024, &[2]);
+        assert!(cache.contains(&RenderKey::new(2, 1.0, 0)), "protected page survived");
+        assert_eq!(cache.len(), 2, "the protected page and the newest one remain");
+        // A single page is never evicted, whatever the target is.
+        cache.trim_to(0, &[]);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn keep_only_frees_everything_but_the_listed_pages() {
+        let mut cache = PageCache::new(64 * 1024 * 1024);
+        for page in 0..5u32 {
+            cache.insert(RenderKey::new(page, 1.0, 0), bmp(100, 100));
+        }
+        let freed = cache.keep_only(&[4]);
+        assert_eq!(freed, 4 * 100 * 100 * 4);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.pages(), vec![4]);
+        assert_eq!(cache.newest_page(), Some(4));
+        assert_eq!(cache.evictions, 4);
+        // Clearing empties the byte count too.
+        cache.clear();
+        assert_eq!(cache.memory_bytes(), 0);
+        assert!(cache.is_empty());
     }
 }

@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.2.0] — 2026-11-20
+
+Reliability release: one memory budget for every open document, a hardened PDF
+engine boundary, full session recovery, and text that degrades gracefully when a
+glyph is missing. See the [release notes](docs/release-0.2.0.md).
+
+### Added — one global memory budget (P0)
+- The page cache is no longer per document: `App` owns a single budget
+  (default 192 MiB, adjustable 64–2048 MiB in **Settings → Memory**) that every
+  open document shares, so ten tabs cost the same as one.
+- Under pressure the reader trims background documents to a single page, then
+  drops the active document's off-screen pages least-recently-used first, and
+  only then the background thumbnails. The page on screen is never evicted.
+- `MemoryPressure` (`ok` / `elevated` ≥ 70 % / `critical` ≥ 92 %) drives a dot in
+  the status bar, which now also shows `cache used/budget · pages · frame time`.
+- **Document information** (Ctrl+I) gained a memory section: used vs budget, a
+  usage bar, evictions, peak process memory and a per-document breakdown.
+- `trim_to`, `keep_only`, `pages` and an eviction counter make the policy
+  testable; `cache.mb` persists in the database.
+
+### Added — session recovery (P1)
+- The set of open documents, their tab order and the active tab are stored in a
+  new `open_documents` table (schema v2) and restored at startup.
+- The sidebar panel, its width and the window rectangle (position and size, on
+  both X11 and Win32) come back too; the window reopens where it was left.
+- A crash — or a kill — is detected: startup compares a `session.clean` flag, and
+  a session that was cut short is restored without asking.
+- Documents that have disappeared are dropped from the session list instead of
+  producing one error dialog each.
+
+### Added — text rendering and keyboard access (P1)
+- Missing glyphs no longer vanish: typographic quotes, dashes and ellipses fall
+  back to ASCII, ligatures expand, accented letters fall back to their base
+  letter, combining marks are skipped, and anything else draws the font's
+  `.notdef` box, so mixed-script text keeps its layout (measured and drawn
+  through the same fallback).
+- `Tab`/`Shift+Tab` walk every control on screen (including out of a text
+  field), the focused control gets a visible ring, and `Enter`/`Space` press it;
+  `Ctrl+Tab` still switches documents.
+
+### Added — security and robustness (`#2`)
+- PDFium is initialised once per process and now shut down explicitly on the way
+  out (`FPDF_DestroyLibrary`); after shutdown every entry point refuses to hand
+  out the API instead of touching a destroyed library.
+- Page counts above 200 000 are rejected before the per-page bookkeeping is
+  allocated, so a hostile page tree cannot exhaust memory at open time.
+- Password handling distinguishes "needs a password" from "wrong password": a
+  rejected password re-opens the prompt with the field cleared instead of turning
+  into a fatal error dialog, and cancelling closes only that tab.
+- Rotated print copies are written into a private `0700` temporary directory as a
+  `0600` file and deleted as soon as the spooler has them — no PDF fragments left
+  in `/tmp`, no predictable names to guess or pre-create.
+- External links stay restricted to `http`/`https`/`mailto`; embedded JavaScript
+  and launch actions are never executed because the reader never asks PDFium to
+  run them.
+
 ## [0.1.0] — 2026-11-20
 
 First tagged release: Linux `.deb`, portable tarball and source; Windows build

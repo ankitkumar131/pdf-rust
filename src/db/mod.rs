@@ -183,6 +183,15 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX highlights_document ON highlights(document_id, page);
     "#,
+    // v2 — the documents that were open, in tab order, plus which one was active.
+    r#"
+    CREATE TABLE IF NOT EXISTS open_documents (
+        document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+        position    INTEGER NOT NULL,
+        active      INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS open_documents_position ON open_documents(position);
+    "#,
 ];
 
 pub const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;
@@ -504,6 +513,39 @@ impl Database {
             .unwrap_or(default)
     }
 
+    /// Replaces the saved list of open documents.
+    ///
+    /// `open` is `(document_id, is_active)` in tab order; it is written in a
+    /// single transaction so a crash can never record a half-updated session.
+    pub fn save_open_documents(&self, open: &[(i64, bool)]) -> Result<(), String> {
+        sql::transaction(&self.conn, |c| {
+            c.exec("DELETE FROM open_documents")?;
+            for (position, (id, active)) in open.iter().enumerate() {
+                let mut stmt = c.prepare(
+                    "INSERT OR REPLACE INTO open_documents (document_id, position, active)
+                     VALUES (?1, ?2, ?3)",
+                )?;
+                stmt.bind_i64(1, *id);
+                stmt.bind_i64(2, position as i64);
+                stmt.bind_i64(3, i64::from(*active));
+                stmt.step()?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The saved open documents in tab order, with the active tab's position.
+    pub fn open_documents(&self) -> Result<Vec<(i64, bool)>, String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT document_id, active FROM open_documents ORDER BY position ASC, document_id ASC",
+        )?;
+        let mut out = Vec::new();
+        while stmt.step()? {
+            out.push((stmt.column_i64(0), stmt.column_i64(1) != 0));
+        }
+        Ok(out)
+    }
+
     pub fn add_highlight(
         &self,
         document_id: i64,
@@ -660,6 +702,30 @@ mod tests {
         assert_eq!(row.path, "/docs/renamed.pdf");
         assert_eq!(row.title.as_deref(), Some("A2"));
         assert_eq!(row.last_opened, 200);
+    }
+
+    #[test]
+    fn open_document_list_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let a = db.upsert_document("fp-a", "/a.pdf", None, 1, 10).unwrap();
+        let b = db.upsert_document("fp-b", "/b.pdf", None, 2, 11).unwrap();
+        let c = db.upsert_document("fp-c", "/c.pdf", None, 3, 12).unwrap();
+        assert!(db.open_documents().unwrap().is_empty());
+        db.save_open_documents(&[(c, false), (a, false), (b, true)])
+            .unwrap();
+        assert_eq!(
+            db.open_documents().unwrap(),
+            vec![(c, false), (a, false), (b, true)],
+            "tab order and the active tab survive"
+        );
+        // Saving again replaces the list instead of appending to it.
+        db.save_open_documents(&[(a, true)]).unwrap();
+        assert_eq!(db.open_documents().unwrap(), vec![(a, true)]);
+        // Removing a document also forgets it in the session list.
+        db.forget_document(b).unwrap();
+        assert_eq!(db.open_documents().unwrap(), vec![(a, true)]);
+        db.save_open_documents(&[]).unwrap();
+        assert!(db.open_documents().unwrap().is_empty());
     }
 
     #[test]

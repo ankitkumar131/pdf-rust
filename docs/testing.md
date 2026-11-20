@@ -15,10 +15,10 @@ cargo test --offline       # same, in a sandbox without crates.io access
 
 | Layer | Where | Count | What it proves |
 | --- | --- | --- | --- |
-| Unit tests | inline `#[cfg(test)]` in `src/` | 116 | geometry, hashing, PNG, font metrics, layout, zoom anchoring, cache eviction, session encoding, print scaling |
+| Unit tests | inline `#[cfg(test)]` in `src/` | 131 | geometry, hashing, PNG, font metrics and glyph fallback, layout, zoom anchoring, cache `trim_to`/`keep_only`, memory pressure bands, session encoding, open-document list, private temp files, print scaling |
 | CLI tests | `src/main.rs` | 3 | argument parsing, defaults, `--stats`/`--selftest` acceptance |
 | Engine tests | `tests/pdf_engine.rs` | 10 | real PDFs through the PDFium worker |
-| Viewer tests | `tests/viewer.rs` | 28 | headless `App` behaviour end to end |
+| Viewer tests | `tests/viewer.rs` | 32 | headless `App` behaviour end to end, including the shared cache budget, session recovery and the password flow |
 
 `gen_fixtures` is an extra test target containing only ignored tests: it writes
 the synthetic documents used for manual profiling (`cargo test --test

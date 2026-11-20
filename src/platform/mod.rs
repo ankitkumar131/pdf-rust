@@ -6,6 +6,7 @@
 
 pub mod dynload;
 pub mod print;
+pub mod tempfile;
 
 #[cfg(target_os = "linux")]
 pub mod x11;

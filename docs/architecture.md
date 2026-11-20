@@ -41,7 +41,7 @@ recorded in [`adr/`](adr).
 | `src/app/mod.rs` | `App`: settings, documents, sidebar state, dialogs, toasts, actions, print state, frame loop, `--stats` counters |
 | `src/app/docview.rs` | `DocView`: one open document — session (page, scroll, zoom, rotation), page geometry, selection, search, thumbnails, rotation-aware coordinate mapping |
 | `src/app/layout.rs` | Page boxes and scroll extents for continuous/single-page layouts, zoom anchoring |
-| `src/app/cache.rs` | Byte-bounded LRU of rendered page bitmaps (`CACHE_LIMIT_BYTES`) |
+| `src/app/cache.rs` | Byte-bounded LRU of rendered page bitmaps, with `trim_to`/`keep_only` for the global budget |
 | `src/app/commands.rs` | Keyboard command table → `Action` |
 | `src/app/dialogs.rs` | Modal dialogs (open file, go to page, password, error, about, print) |
 | `src/ui/canvas.rs` | Software rasterizer: fills, rounded rects, strokes, gradients, shadows, `blit_scaled` |
@@ -58,6 +58,7 @@ recorded in [`adr/`](adr).
 | `src/platform/win32.rs` | Win32 shell (window class, message loop, DIB presentation, clipboard, file drop) |
 | `src/platform/win32/printing.rs` | GDI printing: `PrintDlgW`, page render, `StartDoc`/`StartPage` blits |
 | `src/platform/print.rs` | Platform-neutral `PrintJob` façade (Linux `lp`/`lpr`, Windows GDI) |
+| `src/platform/tempfile.rs` | Private (`0700`) scratch directories that delete themselves when dropped |
 | `src/platform/dynload.rs` | `dlopen`/`GetProcAddress` wrapper with the trailing-NUL fixup |
 | `src/util/*` | SHA-256, PNG encoder, timing/memory counters |
 
@@ -139,6 +140,30 @@ converted at the edges: `screen_to_pdf` / `pdf_to_screen` in `docview.rs` know
 about zoom and rotation, so overlays (selection, links, search highlights) are
 stored once and stay correct at any zoom or rotation.
 
+## Memory management
+
+One budget, every document. `App::cache_budget` (default 192 MiB, settable from
+64 MiB to 2 GiB, persisted as `cache.mb`) is the *only* page-cache limit;
+`DocView::cache` gets the whole budget so a single document can use all of it
+when nothing else is open, and `App::enforce_cache_budget` (called from `tick`)
+keeps the **sum** inside it:
+
+```
+total = Σ doc.cache.memory_bytes()
+if total > budget:
+    for each background doc: cache.trim_to(INACTIVE_DOC_CACHE_BYTES, [its page])
+    if still over: active cache.trim_to(budget - others, visible pages + current)
+    if still over: drop background thumbnails
+```
+
+`trim_to` evicts least-recently-used pages first and refuses to drop a protected
+page (one that is on screen) or the newest entry, so the page the user is looking
+at can never disappear — even when a single bitmap is larger than the budget.
+`MemoryPressure::from_usage` turns the ratio into `ok`/`elevated`/`critical`,
+which is what the status bar dot and the diagnostics panel read; `MemoryStats`
+also reports evictions and peak RSS. Per-document accounting is exposed, so the
+information dialog can show which tab costs what.
+
 ## Threading
 
 All PDFium calls happen on one worker thread; the UI thread only ever talks to
@@ -162,11 +187,19 @@ ratio.
 
 * A document is identified by a SHA-256 fingerprint of its bytes
   (`doc/identity.rs`), with path/size/mtime kept for fast lookup and recent lists.
-* Tables: `documents`, `sessions`, `recent`, `highlights`, `window`,
-  `schema_version`; migrations run forward-only at open.
+* Tables: `documents`, `sessions`, `highlights`, `settings`, `open_documents`
+  (schema v2: the tabs that were open, their order and which one was active);
+  migrations run forward-only at open.
 * WAL mode with `synchronous=NORMAL`; writes are batched and flushed at most
   every 2 s and on `save_all()` (quit, close, crash-safe panic handler).
 * If sqlite3 cannot be loaded the app runs session-only and says so once.
+* Session recovery is crash-safe in both directions: the list of open documents is
+  rewritten (in one transaction) as tabs open, close and change, and a
+  `session.clean` flag is set to `0` at startup and back to `1` by `save_all()`. A
+  start that finds `0` knows the previous run was cut short, restores the tabs
+  without asking, and skips documents that no longer exist. The window rectangle
+  is written by the shells on `ConfigureNotify`/`WM_CLOSE` and reopened at the
+  same position and size.
 
 ## Platform abstraction
 
@@ -180,6 +213,25 @@ hands it to `lp`/`lpr`; the Windows implementation renders through GDI at
 The Win32 shell is compiled on Linux for type checking with
 `--features win32-syntax-check`, which swaps the printing implementation so the
 GDI path is type checked too.
+
+## Trust boundary
+
+The engine boundary is treated as hostile input:
+
+* `ffi::global()` initialises PDFium exactly once per process, serialises every
+  call through a process-wide mutex, and refuses to hand out the API after
+  `ffi::shutdown()` (called once on the exit path) — so a destroyed library is
+  never touched.
+* Handles are null-checked at every step; page counts are capped
+  (`MAX_PAGES = 200 000`) before per-page bookkeeping is allocated; bitmaps are
+  clamped to 8192 px per side and 40 MP total.
+* Open errors are classified (`OpenFailure::PasswordRequired/WrongPassword/Other`)
+  instead of guessed from text, which is what lets a wrong password re-prompt
+  rather than fail the document.
+* Print scratch files live in a `PrivateTempDir` (`0700`, unpredictable name, file
+  restricted to `0600`) that removes itself when the job finishes.
+* External links are limited to `http`/`https`/`mailto`; JavaScript and launch
+  actions are never executed because the engine is never asked to run them.
 
 ## Invariants
 
@@ -196,3 +248,7 @@ GDI path is type checked too.
   made the settings dialog re-fire its actions every frame.
 * A panel clip is always narrower than or equal to the surface: painting is
   bounded by `Regions`, and the shells blit at most the client area.
+* The sum of every document's page cache stays within `App::cache_budget`, and the
+  visible page is never evicted to make room.
+* Text is measured through the same fallback path it is drawn with, so a missing
+  glyph can never shift the layout of the rest of the line.

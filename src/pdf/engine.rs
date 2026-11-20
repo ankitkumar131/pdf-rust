@@ -19,8 +19,44 @@ use super::ffi::{self, Api, FPDF_DOCUMENT, FPDF_FILEWRITE};
 use crate::geom::Size;
 use crate::ui::Bitmap;
 
+/// Message used when a document needs a password before it can be opened.
+pub const ERR_PASSWORD_REQUIRED: &str = "This document is password protected.";
+/// Message used when the supplied password was rejected.
+pub const ERR_PASSWORD_WRONG: &str = "The password is incorrect.";
+
+/// Why an open attempt failed, as far as the user interface cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenFailure {
+    /// The document is encrypted and no password was supplied.
+    PasswordRequired,
+    /// A password was supplied, but it did not unlock the document.
+    WrongPassword,
+    /// Anything else (missing file, corrupt data, unsupported encryption …).
+    Other,
+}
+
+/// Classifies an open error without guessing from arbitrary text: only the two
+/// messages this module produces are treated as password related.
+pub fn classify_open_error(message: &str) -> OpenFailure {
+    let message = message.trim();
+    if message == ERR_PASSWORD_REQUIRED {
+        OpenFailure::PasswordRequired
+    } else if message == ERR_PASSWORD_WRONG {
+        OpenFailure::WrongPassword
+    } else {
+        OpenFailure::Other
+    }
+}
+
 /// Identifies an open document inside the worker.
 pub type DocId = u64;
+
+/// Upper bound on pages per document.
+///
+/// A page tree that claims millions of pages would allocate gigabytes of size
+/// and rotation bookkeeping before a single page is drawn, so such documents are
+/// rejected instead of being trusted.
+pub const MAX_PAGES: usize = 200_000;
 
 /// Render request identity: the cache key and the coalescing key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -647,13 +683,13 @@ impl Worker {
                     if doc.is_null() {
                         let code = unsafe { (self.api.FPDF_GetLastError)() };
                         return Err(if code == ffi::FPDF_ERR_PASSWORD {
-                            "The password is incorrect.".to_string()
+                            ERR_PASSWORD_WRONG.to_string()
                         } else {
                             format!("This document could not be opened: {}", ffi::last_error_message(code))
                         });
                     }
                 } else {
-                    return Err("This document is password protected.".to_string());
+                    return Err(ERR_PASSWORD_REQUIRED.to_string());
                 }
             } else {
                 return Err(format!(
@@ -672,6 +708,13 @@ impl Worker {
         if page_count <= 0 {
             unsafe { (self.api.FPDF_CloseDocument)(doc) };
             return Err("The document contains no pages.".to_string());
+        }
+        if page_count as usize > MAX_PAGES {
+            unsafe { (self.api.FPDF_CloseDocument)(doc) };
+            return Err(format!(
+                "The document claims {} pages, which is more than this reader supports.",
+                page_count
+            ));
         }
         let mut info = DocInfo {
             page_count: page_count as u32,
