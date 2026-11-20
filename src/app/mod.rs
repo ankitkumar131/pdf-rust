@@ -544,7 +544,7 @@ impl App {
                         doc.pending_renders.remove(&key);
                         doc.last_render_ms = millis;
                         self.perf.last_render_ms = millis;
-                        if key.scale_milli == THUMB_SCALE_MILLI && key.rotation == 0 {
+                        if key.rotation == 0 && key.scale_milli == doc.thumb_scale_milli {
                             doc.thumbs.insert(key.page, Some(bitmap));
                             doc.pending_thumbs.remove(&key.page);
                         } else {
@@ -761,27 +761,49 @@ impl App {
     }
 
     /// Requests thumbnails for the pages around the current one (sidebar open).
+    ///
+    /// Thumbnails are rendered at the width they are displayed, so drawing them
+    /// costs a row copy instead of a resample on every frame.
     pub fn ensure_thumbnails(&mut self) {
         if !self.show_sidebar || self.sidebar.tab != SidebarTab::Thumbnails {
             return;
         }
+        let regions = self.regions();
+        let available = (regions.sidebar.w - 24.0 - Metrics::SCROLLBAR_W).max(64.0);
+        let mut requests = Vec::new();
         let Some(doc) = self.active_doc_mut() else {
             return;
         };
         if !doc.is_ready() {
             return;
         }
+        let Some(info) = doc.info().cloned() else {
+            return;
+        };
         let current = doc.current_page();
         let total = doc.page_count();
+        // Match the thumbnail width to the sidebar cell width.
+        let reference_w = info
+            .page_sizes
+            .get(current as usize)
+            .map(|s| crate::pdf::rotated(*s, doc.effective_rotation(current)).w)
+            .unwrap_or(595.0)
+            .max(1.0);
+        let wanted_milli = ((available / reference_w) * 1000.0).round().clamp(60.0, 3000.0) as u32;
+        if wanted_milli.abs_diff(doc.thumb_scale_milli) > doc.thumb_scale_milli / 20 {
+            doc.thumb_scale_milli = wanted_milli;
+            doc.thumbs.clear();
+            doc.pending_thumbs.clear();
+        }
+        let scale = doc.thumb_scale_milli as f32 / 1000.0;
         let from = current.saturating_sub(6);
         let to = (current + 12).min(total);
-        let mut requests = Vec::new();
         for page in from..to {
             if doc.thumbs.contains_key(&page) || doc.pending_thumbs.contains(&page) {
                 continue;
             }
             doc.pending_thumbs.insert(page);
-            requests.push((doc.id, RenderKey::new(page, THUMB_SCALE_MILLI as f32 / 1000.0, 0)));
+            requests.push((doc.id, RenderKey::new(page, scale, 0)));
             if requests.len() >= 4 {
                 break;
             }

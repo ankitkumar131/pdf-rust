@@ -263,30 +263,60 @@ impl Bitmap {
     }
 
     /// Anti-aliased outline of a rounded rectangle (focus rings, cards, popups).
+    ///
+    /// Only the border band is visited: stroking a full-page rectangle used to
+    /// cost a signed-distance evaluation per pixel of the whole page.
     pub fn stroke_round_rect(&mut self, r: Rect, radius: f32, c: Color, thickness: f32) {
         if r.is_empty() || c.a() == 0 {
             return;
         }
         let t = thickness.max(0.5);
+        if radius <= 1.5 {
+            // Plain rectangle: four thin fills, no distance field needed.
+            self.fill_rect(Rect::new(r.x, r.y, r.w, t), c);
+            self.fill_rect(Rect::new(r.x, r.bottom() - t, r.w, t), c);
+            self.fill_rect(Rect::new(r.x, r.y, t, r.h), c);
+            self.fill_rect(Rect::new(r.right() - t, r.y, t, r.h), c);
+            return;
+        }
         let radius = radius.min(r.w * 0.5).min(r.h * 0.5).max(0.0);
         let x0 = r.x.floor().max(0.0) as u32;
         let y0 = r.y.floor().max(0.0) as u32;
         let x1 = (r.right().ceil().max(0.0) as u32).min(self.width);
         let y1 = (r.bottom().ceil().max(0.0) as u32).min(self.height);
+        let band = (t.ceil() as u32 + 1).max(2);
+        let outer = radius.max(t) + 1.0;
+        let x_start = x0.max((r.x + outer).min(x1 as f32) as u32);
+        let x_end = (x1).min((r.right() - outer).max(x0 as f32) as u32);
         for y in y0..y1 {
-            for x in x0..x1 {
-                let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
-                let d_out = sd_round_box(px - r.x - r.w * 0.5, py - r.y - r.h * 0.5, r.w * 0.5, r.h * 0.5, radius);
-                let d_in = sd_round_box(
-                    px - r.x - r.w * 0.5,
-                    py - r.y - r.h * 0.5,
-                    r.w * 0.5 - t,
-                    r.h * 0.5 - t,
-                    (radius - t).max(0.0),
-                );
-                let cov = clamp(0.5 - d_out, 0.0, 1.0) - clamp(0.5 - d_in, 0.0, 1.0);
-                self.blend_coverage(x, y, c, cov);
+            let in_vertical_band = y < y0 + band || y + band >= y1;
+            let mut span = |bmp: &mut Self, from: u32, to: u32| {
+                for x in from..to {
+                    let px = x as f32 + 0.5;
+                    let py = y as f32 + 0.5;
+                    let d_out = sd_round_box(
+                        px - r.x - r.w * 0.5,
+                        py - r.y - r.h * 0.5,
+                        r.w * 0.5,
+                        r.h * 0.5,
+                        radius,
+                    );
+                    let d_in = sd_round_box(
+                        px - r.x - r.w * 0.5,
+                        py - r.y - r.h * 0.5,
+                        r.w * 0.5 - t,
+                        r.h * 0.5 - t,
+                        (radius - t).max(0.0),
+                    );
+                    let cov = clamp(0.5 - d_out, 0.0, 1.0) - clamp(0.5 - d_in, 0.0, 1.0);
+                    bmp.blend_coverage(x, y, c, cov);
+                }
+            };
+            if in_vertical_band {
+                span(self, x0, x1);
+            } else {
+                span(self, x0, x_start.min(x1));
+                span(self, x_end.max(x0), x1);
             }
         }
     }
@@ -342,31 +372,41 @@ impl Bitmap {
         }
         let sx = src.width as f32 / dst.w.max(0.0001);
         let sy = src.height as f32 / dst.h.max(0.0001);
-        let one_to_one = (src.width as i64 - dst.w.round() as i64).abs() <= 1
-            && (src.height as i64 - dst.h.round() as i64).abs() <= 1
-            && dst.x.fract() == 0.0
-            && dst.y.fract() == 0.0;
-        if one_to_one && opacity >= 0.999 {
-            let off_x = dx0 as i64 - dst.x.round() as i64;
-            let off_y = dy0 as i64 - dst.y.round() as i64;
+        // Opaque fast path: nearest-neighbour row copies. Page bitmaps are
+        // rendered within a couple of pixels of the size they are drawn at, so
+        // this is the hot path while scrolling and zooming.
+        if opacity >= 0.999
+            && (src.width as f32 - dst.w).abs() <= 2.0
+            && (src.height as f32 - dst.h).abs() <= 2.0
+        {
+            let off_x = dst.x.round() as i64;
+            let off_y = dst.y.round() as i64;
+            let x_from = (dx0 as i64).max(off_x).max(0) as u32;
+            let x_to = (dx1 as i64).min(off_x + src.width as i64) as u32;
+            if x_from >= x_to {
+                return;
+            }
+            let sxi0 = (x_from as i64 - off_x) as usize;
+            let run = (x_to - x_from) as usize;
             for y in dy0..dy1 {
-                let syi = (y as i64 - dst.y.round() as i64 + off_y) as u32;
-                if syi >= src.height {
+                let syi = y as i64 - off_y;
+                if syi < 0 || syi >= src.height as i64 {
                     continue;
                 }
-                let sbase = (syi as usize) * (src.width as usize);
-                let dbase = (y as usize) * (self.width as usize);
-                for x in dx0..dx1 {
-                    let sxi = (x as i64 - dst.x.round() as i64 + off_x) as u32;
-                    if sxi >= src.width {
-                        continue;
-                    }
-                    let c = Color(src.px[sbase + sxi as usize]);
-                    let i = dbase + x as usize;
-                    if c.a() == 255 {
-                        self.px[i] = c.0;
-                    } else if c.a() > 0 {
-                        self.px[i] = c.blend_over(Color(self.px[i])).0;
+                let sbase = syi as usize * src.width as usize + sxi0;
+                let dbase = y as usize * self.width as usize + x_from as usize;
+                let src_row = &src.px[sbase..sbase + run];
+                let dst_row = &mut self.px[dbase..dbase + run];
+                if src_row.iter().all(|p| (p >> 24) == 255) {
+                    dst_row.copy_from_slice(src_row);
+                } else {
+                    for (d, s) in dst_row.iter_mut().zip(src_row) {
+                        let c = Color(*s);
+                        if c.a() == 255 {
+                            *d = c.0;
+                        } else if c.a() > 0 {
+                            *d = c.blend_over(Color(*d)).0;
+                        }
                     }
                 }
             }

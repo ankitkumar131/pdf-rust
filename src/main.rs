@@ -11,6 +11,7 @@
 //!       --no-db            Do not read or write the library database
 //!       --page <n>         Open the first document at page n
 //!       --stats            Print startup/memory statistics at exit
+//!       --selftest [pdf]   Headless smoke test and performance measurement
 //! ```
 
 use std::path::PathBuf;
@@ -34,6 +35,7 @@ Options:
       --no-db            Do not read or write the library database
       --page <n>         Open the first document at page n
       --stats            Print startup/memory statistics at exit
+      --selftest [pdf]   Headless smoke test and performance measurement
 ";
 
 struct Options {
@@ -41,6 +43,7 @@ struct Options {
     no_db: bool,
     page: Option<u32>,
     stats: bool,
+    selftest: bool,
     docs: Vec<PathBuf>,
 }
 
@@ -50,6 +53,7 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
         no_db: false,
         page: None,
         stats: false,
+        selftest: false,
         docs: Vec::new(),
     };
     let mut i = 0;
@@ -66,6 +70,7 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
             }
             "--no-db" => options.no_db = true,
             "--stats" => options.stats = true,
+            "--selftest" => options.selftest = true,
             "--db" => {
                 i += 1;
                 let value = args.get(i).ok_or("--db needs a path")?;
@@ -116,7 +121,82 @@ fn open_database(options: &Options) -> (Option<Database>, Option<String>) {
     }
 }
 
+/// Headless smoke test: drives the application without a window and reports the
+/// timings the README quotes. Used by CI and by `scripts/bench.sh`.
+fn selftest(options: &Options) -> Result<(), String> {
+    use pdf_rust::ui::{Bitmap, Font, Input};
+
+    let started = Instant::now();
+    let engine = Engine::start();
+    let (db, db_error) = open_database(options);
+    let mut app = App::new(engine, db, db_error);
+    app.window = pdf_rust::geom::Size::new(1180.0, 860.0);
+    let font = Font::ui();
+    let mut bmp = Bitmap::new(1180, 860);
+    let mut input = Input::default();
+
+    // Warm the UI up with one frame of the empty window.
+    app.frame(&input, &mut bmp, &font);
+    let first_frame_ms = started.elapsed().as_secs_f32() * 1000.0;
+
+    let mut rendered_ms = f32::NAN;
+    if let Some(path) = options.docs.first() {
+        app.open_path(path.clone(), None);
+        let open_started = Instant::now();
+        let deadline = Instant::now() + std::time::Duration::from_secs(120);
+        while Instant::now() < deadline {
+            app.tick(app.now());
+            app.frame(&input, &mut bmp, &font);
+            let ready = app.active_doc().map(|d| d.is_ready()).unwrap_or(false);
+            let drawn = app.active_doc().map(|d| d.cache.len() > 0).unwrap_or(false);
+            if ready && drawn {
+                rendered_ms = open_started.elapsed().as_secs_f32() * 1000.0;
+                break;
+            }
+            if app.active_doc().map(|d| d.error.is_some()).unwrap_or(false) {
+                return Err(format!(
+                    "the document could not be opened: {}",
+                    app.active_doc().and_then(|d| d.error.clone()).unwrap_or_default()
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if rendered_ms.is_nan() {
+            return Err("timed out waiting for the first page".to_string());
+        }
+        // Give the worker a moment to finish the visible pages, then measure a
+        // steady-state frame.
+        for _ in 0..40 {
+            app.tick(app.now());
+            app.frame(&input, &mut bmp, &font);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    } else {
+        app.frame(&input, &mut bmp, &font);
+    }
+
+    let doc = app.active_doc();
+    println!("pdf-rust selftest");
+    println!("  first frame        {:.1} ms", first_frame_ms);
+    if !rendered_ms.is_nan() {
+        println!("  document -> pixels {:.1} ms", rendered_ms);
+    }
+    println!("  frame (steady)     {:.2} ms", app.perf.last_frame_ms);
+    println!("  page render        {:.1} ms", app.perf.last_render_ms);
+    println!("  page cache         {}", pdf_rust::util::stats::human_bytes(app.perf.cache_bytes as u64));
+    println!("  peak memory        {}", pdf_rust::util::stats::human_bytes(pdf_rust::util::stats::peak_rss_bytes()));
+    if let Some(doc) = doc {
+        println!("  document           {} pages", doc.page_count());
+        println!("  text selection     {}", if doc.texts.is_empty() { "not loaded" } else { "ready" });
+    }
+    app.save_all();
+    Ok(())
+}
+
 fn run(options: Options) -> Result<(), String> {
+    if options.selftest {
+        return selftest(&options);
+    }
     let started = Instant::now();
     let engine = Engine::start();
     if let Some(err) = &engine.init_error {

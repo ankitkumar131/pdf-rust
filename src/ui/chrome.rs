@@ -403,14 +403,24 @@ fn paint_thumbnails(ui: &mut Ui, c: &mut Chrome, body: Rect) {
         content_h += thumb_h + 24.0;
         if cell.bottom() > body.y && cell.y < body.bottom() {
             let selected = page == current;
-            if widgets::icon_button(ui, id(&format!("thumb-{}", page)), cell, Icon::Thumbnails, true, selected) {
+            let id_cell = id(&format!("thumb-{}", page));
+            if ui.interact(id_cell, cell, true) {
                 clicked = Some(page);
+            }
+            if selected {
+                ui.bmp.fill_rect(cell.inset_xy(-2.0, -2.0), ui.theme.accent_soft);
+            } else if ui.hovered(cell) {
+                ui.bmp.fill_rect(cell.inset_xy(-2.0, -2.0), ui.theme.control_hover);
             }
             let thumb_area = cell.inset_xy(2.0, 2.0);
             match doc.thumbs.get(&page) {
                 Some(Some(bmp)) => {
                     let dst = fit_inside(thumb_area, bmp.width as f32, bmp.height as f32);
-                    ui.bmp.drop_shadow(dst, 3.0, 0.25, ui.theme.shadow);
+                    let shadow = ui.theme.shadow.fade(0.30);
+                    ui.bmp
+                        .fill_rect(Rect::new(dst.right(), dst.y + 2.0, 3.0, dst.h), shadow);
+                    ui.bmp
+                        .fill_rect(Rect::new(dst.x + 2.0, dst.bottom(), dst.w + 1.0, 3.0), shadow);
                     ui.bmp.fill_rect(dst, Color::rgb(255, 255, 255));
                     ui.bmp.blit_scaled(bmp, dst, 1.0);
                     ui.bmp.stroke_round_rect(dst, 1.0, ui.theme.page_border, 1.0);
@@ -834,10 +844,15 @@ fn paint_content(ui: &mut Ui, c: &mut Chrome) {
         if rect.bottom() < content.y || rect.y > content.bottom() {
             continue;
         }
-        ui.bmp.drop_shadow(rect, 7.0, 0.22, ui.theme.shadow);
+        // Shadow along the two visible edges only: filling a full translucent
+        // rectangle behind every page costs more than blitting the page itself.
+        let shadow = ui.theme.shadow.fade(0.30);
+        ui.bmp
+            .fill_rect(Rect::new(rect.right(), rect.y + 3.0, 5.0, rect.h), shadow);
+        ui.bmp
+            .fill_rect(Rect::new(rect.x + 3.0, rect.bottom(), rect.w + 2.0, 5.0), shadow);
         match doc.bitmap_for(geom.page) {
             Some((bmp, _exact)) => {
-                ui.bmp.fill_rect(rect, Color::rgb(255, 255, 255));
                 ui.bmp.blit_scaled(&bmp, rect, 1.0);
             }
             None => {

@@ -98,6 +98,9 @@ pub struct DocView {
     pub search: SearchState,
     pub thumbs: HashMap<u32, Option<Arc<Bitmap>>>,
     pub pending_thumbs: HashSet<u32>,
+    /// Scale (milli-pixels per point) that thumbnails are rendered at, so they
+    /// can be blitted 1:1 into the sidebar instead of being resampled.
+    pub thumb_scale_milli: u32,
     pub rotation_scope: RotationScope,
     /// Session changes waiting to be persisted.
     pub dirty: bool,
@@ -145,6 +148,7 @@ impl DocView {
             rotation_scope: RotationScope::All,
             thumbs: HashMap::new(),
             pending_thumbs: HashSet::new(),
+            thumb_scale_milli: crate::app::THUMB_SCALE_MILLI,
             dirty: false,
             last_saved: 0.0,
             opened_at: now,
