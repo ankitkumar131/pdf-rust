@@ -124,6 +124,23 @@ every path it tried instead of waiting for a render that will never come.
 `PDFRUST_STATS=1` (or `--stats`) prints startup time and peak memory to stderr
 on exit; useful in a shell loop or under `/usr/bin/time`.
 
+## Screenshots and visual checks
+
+`--screenshot <out.png> [--dark] [--size WxH] [--page N]` opens a document,
+waits for the page, thumbnails and prefetches to settle, paints one frame with the
+real paint path and writes it as a PNG. It needs no display server, which makes it
+usable for documentation and for eyeballing a rendering change:
+
+```bash
+cargo test --test gen_fixtures -- --ignored --nocapture
+./target/release/pdf-rust --screenshot /tmp/light.png --no-db "$TMPDIR/pdf-rust-bench/benchmark-200.pdf"
+./target/release/pdf-rust --screenshot /tmp/dark.png --dark --size 1280x820 --no-db "$TMPDIR/pdf-rust-bench/benchmark-200.pdf"
+```
+
+`scripts/screenshot.sh` regenerates `docs/screenshots/` this way. The encoder in
+`util::png` stores uncompressed zlib streams (tiny code, valid but large files),
+so the script recompresses the output with Python's `zlib` before committing.
+
 ## Manual matrix
 
 Some things cannot be automated here because the sandbox has no X server. They

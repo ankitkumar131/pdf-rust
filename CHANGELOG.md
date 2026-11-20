@@ -77,6 +77,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
     real zoom.
   - page and thumbnail shadows are two edge strips instead of blurred rectangles.
   - thumbnails render at the sidebar cell width, so the sidebar blits 1:1.
+- `--screenshot <out.png> [--dark] [--size WxH] [--page N]` paints one frame with
+  the real paint path and writes it as a PNG, so screenshots and visual checks
+  need no display server; `scripts/screenshot.sh` regenerates `docs/screenshots/`.
 - `--selftest [doc.pdf]` runs the viewer headlessly and reports first frame,
   document load, steady frame, page render, cache size, peak memory and page count;
   `scripts/bench.sh` wraps it.

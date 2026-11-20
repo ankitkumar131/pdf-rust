@@ -12,6 +12,7 @@
 //!       --page <n>         Open the first document at page n
 //!       --stats            Print startup/memory statistics at exit
 //!       --selftest [pdf]   Headless smoke test and performance measurement
+//!       --screenshot <png> Render one frame headlessly and write it as a PNG
 //! ```
 
 use std::path::PathBuf;
@@ -36,6 +37,9 @@ Options:
       --page <n>         Open the first document at page n
       --stats            Print startup/memory statistics at exit
       --selftest [pdf]   Headless smoke test and performance measurement
+      --screenshot <png> Render one frame headlessly and write it as a PNG
+      --dark             Start in the dark theme
+      --size <WxH>       Window size for --screenshot (default 1180x860)
 ";
 
 struct Options {
@@ -44,6 +48,9 @@ struct Options {
     page: Option<u32>,
     stats: bool,
     selftest: bool,
+    screenshot: Option<PathBuf>,
+    dark: bool,
+    size: Option<(u32, u32)>,
     docs: Vec<PathBuf>,
 }
 
@@ -54,6 +61,9 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
         page: None,
         stats: false,
         selftest: false,
+        screenshot: None,
+        dark: false,
+        size: None,
         docs: Vec::new(),
     };
     let mut i = 0;
@@ -71,6 +81,25 @@ fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
             "--no-db" => options.no_db = true,
             "--stats" => options.stats = true,
             "--selftest" => options.selftest = true,
+            "--dark" => options.dark = true,
+            "--screenshot" => {
+                i += 1;
+                let value = args.get(i).ok_or("--screenshot needs a path")?;
+                options.screenshot = Some(PathBuf::from(value));
+            }
+            "--size" => {
+                i += 1;
+                let value = args.get(i).ok_or("--size needs WxH")?;
+                let (w, h) = value
+                    .split_once(['x', 'X'])
+                    .ok_or_else(|| format!("invalid size: {} (expected 1180x860)", value))?;
+                let w: u32 = w.parse().map_err(|_| format!("invalid width: {}", w))?;
+                let h: u32 = h.parse().map_err(|_| format!("invalid height: {}", h))?;
+                if w < 320 || h < 240 || w > 4096 || h > 4096 {
+                    return Err(format!("size out of range: {}x{}", w, h));
+                }
+                options.size = Some((w, h));
+            }
             "--db" => {
                 i += 1;
                 let value = args.get(i).ok_or("--db needs a path")?;
@@ -212,9 +241,83 @@ fn selftest(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// Renders one frame of the viewer headlessly and writes it as a PNG.
+///
+/// This is how documentation screenshots are produced (and how a visual check
+/// can run without a display server); it exercises exactly the paint path the
+/// windowed shells use.
+fn screenshot(options: &Options, out: &std::path::Path) -> Result<(), String> {
+    use pdf_rust::ui::{Bitmap, Font, Input};
+
+    let (w, h) = options.size.unwrap_or((1180, 860));
+    let engine = Engine::start();
+    if let Some(err) = engine.init_error.clone() {
+        return Err(err);
+    }
+    let (db, db_error) = open_database(options);
+    let mut app = App::new(engine, db, db_error);
+    app.window = pdf_rust::geom::Size::new(w as f32, h as f32);
+    app.settings.dark = options.dark;
+    let font = Font::ui();
+    let mut bmp = Bitmap::new(w, h);
+    let input = Input::default();
+
+    if let Some(page) = options.page {
+        app.pending_initial_page = Some(page);
+    }
+    if let Some(path) = options.docs.first() {
+        app.open_path(path.clone(), None);
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        while Instant::now() < deadline {
+            app.tick(app.now());
+            app.frame(&input, &mut bmp, &font);
+            let drawn = app
+                .active_doc()
+                .map(|d| d.is_ready() && d.cache.len() > 0 && !d.thumbs.is_empty())
+                .unwrap_or(false);
+            if drawn {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if let Some(doc) = app.active_doc() {
+            if let Some(err) = &doc.error {
+                return Err(format!("the document could not be opened: {}", err));
+            }
+        }
+        // Let thumbnails and prefetched pages settle, then paint a final frame.
+        for _ in 0..60 {
+            app.tick(app.now());
+            app.frame(&input, &mut bmp, &font);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+    // One more frame so the recorded timing is a steady-state one.
+    app.frame(&input, &mut bmp, &font);
+    let png = pdf_rust::util::png::encode_rgb(w, h, &bmp.px);
+    if let Some(dir) = out.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("could not create {}: {}", dir.display(), e))?;
+        }
+    }
+    std::fs::write(out, &png).map_err(|e| format!("could not write {}: {}", out.display(), e))?;
+    println!(
+        "wrote {} ({}x{}, {})",
+        out.display(),
+        w,
+        h,
+        pdf_rust::util::stats::human_bytes(png.len() as u64)
+    );
+    Ok(())
+}
+
 fn run(options: Options) -> Result<(), String> {
     if options.selftest {
         return selftest(&options);
+    }
+    if let Some(out) = options.screenshot.clone() {
+        return screenshot(&options, &out);
     }
     let started = Instant::now();
     if !pdf_rust::pdf::ffi::available() {

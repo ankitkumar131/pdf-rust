@@ -3,7 +3,9 @@
 //! Used by the test harness (`--screenshot` and the UI golden-frame tests) to
 //! dump rendered frames so they can be inspected visually without a display
 //! server. It writes uncompressed zlib streams, which keeps the code tiny and
-//! the output perfectly valid.
+//! the output perfectly valid but large: run any PNG optimiser (for example
+//! `optipng -o2` or `python3 -c "import zlib; ..."`) over screenshots that are
+//! committed to the repository.
 
 fn crc32(data: &[u8]) -> u32 {
     static mut TABLE: [u32; 256] = [0; 256];

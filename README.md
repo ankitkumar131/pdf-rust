@@ -26,6 +26,12 @@ Rust with **zero third-party crates**.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+![pdf-rust showing a 200-page document, light theme](docs/screenshots/light.png)
+
+<sub>Light and dark themes ([dark](docs/screenshots/dark.png)). Both frames were
+painted by the viewer itself with `pdf-rust --screenshot`; see
+[`scripts/screenshot.sh`](scripts/screenshot.sh).</sub>
+
 ## Status
 
 Milestones 1–5 of the plan in [`DEVELOPMENT.md`](DEVELOPMENT.md) are implemented:
@@ -114,7 +120,9 @@ pdf-rust [--db <path> | --no-db] [--page <n>] [--stats] [--selftest [doc.pdf]] [
 ```
 
 `--selftest` runs the real viewer headlessly (no window) and prints timing and
-memory numbers; `--stats` prints startup time and peak memory on exit.
+memory numbers; `--screenshot <out.png>` paints one frame headlessly and writes
+it as a PNG (`--dark`, `--size 1280x800` and `--page <n>` apply); `--stats`
+prints startup time and peak memory on exit.
 
 ## Performance
 
