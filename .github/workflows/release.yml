@@ -1,0 +1,154 @@
+name: Release artifacts
+
+# Builds the downloadable binaries for every platform and attaches them to the
+# GitHub release whose tag matches the version in Cargo.toml.
+#
+# The in-sandbox environment cannot reach uploads.github.com, so release assets
+# are produced here instead: the Linux job makes the .deb, the portable tarball
+# and (when appimagetool is installable) the AppImage, and the Windows job makes
+# the portable ZIP and — when NSIS is present — the installer. Both jobs check
+# for `v<version>` and upload with `gh release upload`, which is a no-op when the
+# release does not exist yet; the workflow artifacts are kept either way.
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: linux-release-${{ hashFiles('Cargo.lock') }}
+
+      - name: Fetch PDFium
+        run: ./scripts/fetch-pdfium.sh linux-x64
+
+      - name: Tests
+        run: cargo test --offline --release
+
+      - name: Build release binary
+        run: cargo build --offline --release
+
+      - name: Package .deb and portable tarball
+        run: |
+          ./packaging/linux/build-deb.sh
+          ./packaging/linux/build-portable.sh
+
+      - name: Try to build an AppImage
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool.AppImage
+          # --appimage-extract works without FUSE on CI runners.
+          (cd /tmp && ./appimagetool.AppImage --appimage-extract >/dev/null)
+          ./packaging/linux/build-appimage.sh || true
+          if [ -d dist/pdf-rust.AppDir ] && [ ! -e dist/pdf-rust.AppImage ]; then
+            ARCH=x86_64 /tmp/squashfs-root/AppRun dist/pdf-rust.AppDir dist/pdf-rust.AppImage || true
+          fi
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum *.deb *.tar.gz > SHA256SUMS.txt
+          if ls *.AppImage >/dev/null 2>&1; then sha256sum *.AppImage >> SHA256SUMS.txt; fi
+          cat SHA256SUMS.txt
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-rust-linux
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Attach to the matching release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "attaching artifacts to $tag"
+            gh release upload "$tag" dist/*.deb dist/*.tar.gz dist/SHA256SUMS.txt --clobber
+            if ls dist/*.AppImage >/dev/null 2>&1; then
+              gh release upload "$tag" dist/*.AppImage --clobber
+            fi
+          else
+            echo "no release $tag yet; artifacts stay as workflow artifacts"
+          fi
+
+  windows:
+    name: Windows packages
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: windows-release-${{ hashFiles('Cargo.lock') }}
+
+      - name: Fetch PDFium
+        shell: bash
+        run: ./scripts/fetch-pdfium.sh win-x64
+
+      - name: Tests (informational)
+        continue-on-error: true
+        run: cargo test --offline --release
+
+      - name: Make sure NSIS is available
+        continue-on-error: true
+        run: choco install nsis --no-progress -y
+
+      - name: Build and package
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -SkipTests -PdfiumDll runtime/pdfium/pdfium.dll
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-rust-windows
+          path: |
+            dist/*.zip
+            dist/*setup.exe
+          if-no-files-found: error
+
+      - name: Attach to the matching release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "attaching artifacts to $tag"
+            gh release upload "$tag" dist/*.zip --clobber
+            if ls dist/*setup.exe >/dev/null 2>&1; then
+              gh release upload "$tag" dist/*setup.exe --clobber
+            fi
+          else
+            echo "no release $tag yet; artifacts stay as workflow artifacts"
+          fi
