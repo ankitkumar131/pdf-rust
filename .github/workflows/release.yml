@@ -198,10 +198,15 @@ jobs:
 
       - name: Write SHA256SUMS.txt
         run: |
+          set -eux
           cd assets
           rm -f SHA256SUMS.txt   # the Linux job's copy; replaced by this one
-          ls -l
-          sha256sum ./* > ../SHA256SUMS.txt
+          find . -maxdepth 2 -type f -printf '%P\n' | sort
+          # Hash regular files only (a merged artifact can leave directories,
+          # which sha256sum refuses to read).
+          find . -maxdepth 2 -type f -printf '%P\0' \
+            | sort -z \
+            | xargs -0 sha256sum > ../SHA256SUMS.txt
           cat ../SHA256SUMS.txt
 
       - name: Attach the checksums to the release
