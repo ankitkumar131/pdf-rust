@@ -78,7 +78,18 @@ jobs:
         run: ./scripts/fetch-pdfium.sh win-x64
 
       - name: Tests
-        run: cargo test --offline --release
+        shell: pwsh
+        run: |
+          # Surface failing tests as annotations: the job log is not always
+          # accessible, annotations are.
+          cargo test --offline --release 2>&1 | Tee-Object -FilePath tests.log
+          if ($LASTEXITCODE -ne 0) {
+            Select-String -Path tests.log -Pattern 'FAILED|panicked at' |
+              Select-Object -First 10 |
+              ForEach-Object { Write-Host "::error::$($_.Line.Trim())" }
+            Get-Content tests.log -Tail 40
+            exit 1
+          }
 
       - name: Package (portable ZIP)
         shell: pwsh
