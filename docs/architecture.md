@@ -114,6 +114,9 @@ rectangle, which used to cost more than painting the page itself.
 `DocView` holds everything about one open document:
 
 * `session`: page index, scroll offset, zoom mode and value, rotation, view mode.
+* `scroll` / `smooth_target`: the current offset and, while a smooth scroll is in
+  flight, where it is heading (`App::tick` eases towards it with a 60 ms time
+  constant; jumps and page changes cancel it).
 * `info`: page count, page sizes and intrinsic rotations, metadata, page labels.
 * `layout`: the page rectangles for the current mode/zoom (recomputed only when
   geometry changes).

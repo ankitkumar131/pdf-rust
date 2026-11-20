@@ -7,8 +7,9 @@ Rust with **zero third-party crates**.
   view, no telemetry, no background services.
 * **Remembers where you stopped** — page, scroll offset, zoom, rotation and
   reading mode per document, restored after a restart, a crash or a reboot.
-* Continuous and single-page reading, thumbnails, table of contents, full-text
-  search, text selection and copy, rotation, printing and link handling.
+* Continuous and single-page reading with smooth (animated) scrolling,
+  thumbnails, table of contents, full-text search, text selection and copy,
+  rotation, printing and link handling.
 * Light and dark themes, full-screen and presentation modes, keyboard-first.
 * A steady frame costs **~1.6 ms** on a 200-page document (release build,
   1180×860) — see [Performance](#performance).

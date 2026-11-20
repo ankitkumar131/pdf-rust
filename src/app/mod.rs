@@ -47,7 +47,6 @@ pub struct Settings {
     pub resume_policy: ResumePolicy,
     pub window: Rect,
     pub window_maximized: bool,
-    pub confirm_close: bool,
     pub smooth_scroll: bool,
     pub page_fit_mode: ZoomMode,
 }
@@ -61,7 +60,6 @@ impl Default for Settings {
             resume_policy: ResumePolicy::Ask,
             window: Rect::new(80.0, 60.0, 1180.0, 860.0),
             window_maximized: false,
-            confirm_close: false,
             smooth_scroll: true,
             page_fit_mode: ZoomMode::FitPage,
         }
@@ -89,7 +87,6 @@ impl Settings {
             h.max(360.0),
         );
         s.window_maximized = db.setting_bool("window.maximized", false);
-        s.confirm_close = db.setting_bool("close.confirm", false);
         s.smooth_scroll = db.setting_bool("scroll.smooth", true);
         s.page_fit_mode = ZoomMode::parse(&db.get_setting("fit.mode").ok().flatten().unwrap_or_default());
         s
@@ -105,7 +102,6 @@ impl Settings {
         let _ = db.set_setting("window.w", &format!("{:.0}", self.window.w));
         let _ = db.set_setting("window.h", &format!("{:.0}", self.window.h));
         let _ = db.set_setting("window.maximized", if self.window_maximized { "1" } else { "0" });
-        let _ = db.set_setting("close.confirm", if self.confirm_close { "1" } else { "0" });
         let _ = db.set_setting("scroll.smooth", if self.smooth_scroll { "1" } else { "0" });
         let _ = db.set_setting("fit.mode", self.page_fit_mode.as_str());
     }
@@ -221,6 +217,7 @@ pub enum Action {
     ForgetDocument(i64),
     ShowDialog(DialogKind),
     SetResumePolicy(ResumePolicy),
+    SetSmoothScroll(bool),
     SetHighlightColor(u32),
     GotoSearchHit(usize),
     ToggleOutline(String),
@@ -959,7 +956,7 @@ impl App {
         let top_pt = page_h - hit.top;
         let target_top = geom.y + top_pt * doc.layout.zoom;
         let desired = target_top - viewport.h * 0.35;
-        doc.scroll = desired.clamp(0.0, doc.layout.max_scroll());
+        doc.jump_to(desired.clamp(0.0, doc.layout.max_scroll()));
         doc.recompute_layout(viewport);
     }
 
@@ -1623,6 +1620,18 @@ impl App {
                     }
                 }
             }
+            Action::SetSmoothScroll(on) => {
+                self.settings.smooth_scroll = on;
+                if !on {
+                    // Finish any animation in flight so nothing keeps moving.
+                    for doc in &mut self.docs {
+                        doc.animate_scroll(1.0, viewport);
+                    }
+                }
+                if let Some(db) = &self.db {
+                    self.settings.save(db);
+                }
+            }
             Action::PrintDocument => self.print_document(),
             Action::ExportRotated => self.export_rotated_copy(),
             Action::SaveSettings => {
@@ -1631,14 +1640,15 @@ impl App {
                 }
             }
             Action::ScrollBy(delta) => {
+                let smooth = self.settings.smooth_scroll;
                 if let Some(doc) = self.active_doc_mut() {
-                    doc.scroll_by(delta, viewport);
+                    doc.scroll_to(doc.scroll + delta, viewport, smooth);
                 }
             }
             Action::SetPageScroll { page, frac } => {
                 if let Some(doc) = self.active_doc_mut() {
                     let scroll = doc.layout.scroll_for(page, frac);
-                    doc.scroll = scroll;
+                    doc.jump_to(scroll);
                     doc.recompute_layout(viewport);
                     doc.dirty = true;
                 }
@@ -1661,7 +1671,20 @@ impl App {
 
     /// Periodic work: engine events, autosave, expiry of transient messages.
     pub fn tick(&mut self, now: f64) {
+        let dt = if self.last_time > 0.0 {
+            (now - self.last_time).clamp(0.0, 0.1) as f32
+        } else {
+            0.0
+        };
         self.last_time = now;
+        if self.settings.smooth_scroll && dt > 0.0 {
+            let viewport = self.content_rect().size();
+            if let Some(doc) = self.active_doc_mut() {
+                if doc.is_scrolling() {
+                    doc.animate_scroll(dt, viewport);
+                }
+            }
+        }
         self.pump_engine();
         if self.engine_error.is_none() && !self.engine.is_ready() {
             self.engine_error = self.engine.init_error.clone();
@@ -1692,6 +1715,9 @@ impl App {
     /// repainting at animation rate instead of only on input.
     pub fn wants_frames(&self) -> bool {
         if !self.toasts.is_empty() {
+            return true;
+        }
+        if self.docs.iter().any(|d| d.is_scrolling()) {
             return true;
         }
         self.docs.iter().any(|d| {
@@ -1764,8 +1790,12 @@ impl App {
                     doc.set_zoom(ZoomMode::Custom, next, regions.content.size());
                     self.settings.page_fit_mode = ZoomMode::Custom;
                 }
-            } else if let Some(doc) = self.active_doc_mut() {
-                doc.scroll_by(-input.wheel * 60.0, regions.content.size());
+            } else {
+                let smooth = self.settings.smooth_scroll;
+                let viewport = regions.content.size();
+                if let Some(doc) = self.active_doc_mut() {
+                    doc.scroll_to(doc.scroll - input.wheel * 60.0, viewport, smooth);
+                }
             }
         }
 

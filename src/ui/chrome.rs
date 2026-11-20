@@ -1491,7 +1491,17 @@ fn paint_settings_dialog(ui: &mut Ui, d: &mut Dialogs, ctx: &DialogCtx, window: 
     if widgets::checkbox(ui, id("set-dark"), Rect::new(inner.x, y, inner.w, 26.0), "Dark theme (Ctrl+D)", ctx.settings.dark) {
         out.push(Action::ToggleTheme);
     }
-    y += 36.0;
+    y += 34.0;
+    if widgets::checkbox(
+        ui,
+        id("set-smooth"),
+        Rect::new(inner.x, y, inner.w, 26.0),
+        "Smooth scrolling",
+        ctx.settings.smooth_scroll,
+    ) {
+        out.push(Action::SetSmoothScroll(!ctx.settings.smooth_scroll));
+    }
+    y += 34.0;
     widgets::section_label(ui, Rect::new(inner.x, y, inner.w, 16.0), "WHEN REOPENING A DOCUMENT");
     y += 22.0;
     for (i, policy) in [ResumePolicy::Ask, ResumePolicy::Always, ResumePolicy::Never].into_iter().enumerate() {

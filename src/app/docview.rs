@@ -83,6 +83,8 @@ pub struct DocView {
     pub session: SessionRow,
     /// Scroll offset in pixels (document space, or page space in single mode).
     pub scroll: f32,
+    /// Where a smooth scroll is heading, in the same units as `scroll`.
+    smooth_target: Option<f32>,
     pub layout: ViewLayout,
     pub cache: PageCache,
     pub pending_renders: HashSet<RenderKey>,
@@ -132,6 +134,7 @@ impl DocView {
             state: DocState::Loading,
             session,
             scroll: 0.0,
+            smooth_target: None,
             layout: ViewLayout::default(),
             cache: PageCache::new(cache_limit),
             pending_renders: HashSet::new(),
@@ -197,7 +200,7 @@ impl DocView {
         let scroll = first.scroll_for(anchor, session.scroll_frac);
         let mut placed = layout::build_layout(&info, &session, viewport, scroll);
         placed.scroll = scroll.min(placed.max_scroll());
-        self.scroll = placed.scroll;
+        self.jump_to(placed.scroll);
         self.layout = placed;
         self.restored = true;
         self.dirty = false;
@@ -219,22 +222,69 @@ impl DocView {
 
     /// Scrolls by `delta` pixels, keeping the session page in sync.
     pub fn scroll_by(&mut self, delta: f32, viewport: Size) {
+        self.scroll_to(self.scroll + delta, viewport, false);
+    }
+
+    /// Scrolls to an absolute offset, either immediately or by animating
+    /// towards it (`animate`), which `App::tick` advances with `animate_scroll`.
+    pub fn scroll_to(&mut self, target: f32, viewport: Size, animate: bool) {
         if !self.is_ready() {
             return;
         }
         let max = self.layout.max_scroll();
-        let target = (self.scroll + delta).clamp(0.0, max);
+        let target = target.clamp(0.0, max);
+        if animate && (target - self.scroll).abs() > 1.0 {
+            self.smooth_target = Some(target);
+            return;
+        }
+        self.smooth_target = None;
         if (target - self.scroll).abs() < 0.01 {
             return;
         }
-        self.scroll = target;
-        let page_before = self.session.last_page;
+        self.jump_to(target);
         self.recompute_layout(viewport);
-        if self.session.last_page != page_before {
+        self.dirty = true;
+    }
+
+    /// Jumps without animation, cancelling a smooth scroll in flight.
+    pub fn jump_to(&mut self, offset: f32) {
+        self.smooth_target = None;
+        self.scroll = offset;
+    }
+
+    /// True while a smooth scroll is still in flight.
+    pub fn is_scrolling(&self) -> bool {
+        self.smooth_target.is_some()
+    }
+
+    /// Advances a smooth scroll by `dt` seconds. Returns true while animating.
+    ///
+    /// Exponential easing with a ~60 ms time constant: fast enough to feel
+    /// immediate, slow enough that a mouse wheel step is visible as motion.
+    pub fn animate_scroll(&mut self, dt: f32, viewport: Size) -> bool {
+        let Some(target) = self.smooth_target else {
+            return false;
+        };
+        let max = self.layout.max_scroll();
+        let target = target.clamp(0.0, max);
+        let remaining = target - self.scroll;
+        if remaining.abs() < 0.75 || dt <= 0.0 {
+            self.smooth_target = None;
+            self.scroll = target;
+            self.recompute_layout(viewport);
             self.dirty = true;
-        } else {
-            self.dirty = true;
+            return false;
         }
+        let factor = 1.0 - (-dt / 0.06).exp();
+        let mut next = self.scroll + remaining * factor.clamp(0.0, 1.0);
+        if (next - self.scroll).abs() < 0.05 {
+            // Guard against a stall when the frame rate is very high.
+            next = self.scroll + remaining.signum() * 0.05;
+        }
+        self.scroll = next;
+        self.recompute_layout(viewport);
+        self.dirty = true;
+        true
     }
 
     /// Jumps to a zero-based page, positioning its top at the viewport top.
@@ -246,7 +296,7 @@ impl DocView {
         let page = page.min(count - 1);
         self.session.last_page = page + 1;
         self.recompute_layout(viewport);
-        self.scroll = self.layout.scroll_for(page, 0.0);
+        self.jump_to(self.layout.scroll_for(page, 0.0));
         self.recompute_layout(viewport);
         self.dirty = true;
     }
@@ -265,7 +315,7 @@ impl DocView {
         }
         self.session.last_page = anchor_page + 1;
         self.recompute_layout(viewport);
-        self.scroll = self.layout.scroll_for(anchor_page, anchor_frac);
+        self.jump_to(self.layout.scroll_for(anchor_page, anchor_frac));
         self.recompute_layout(viewport);
         self.dirty = true;
     }
@@ -295,7 +345,7 @@ impl DocView {
         self.cache.clear();
         self.pending_renders.clear();
         self.recompute_layout(viewport);
-        self.scroll = self.layout.scroll_for(anchor_page, anchor_frac);
+        self.jump_to(self.layout.scroll_for(anchor_page, anchor_frac));
         self.recompute_layout(viewport);
         self.dirty = true;
     }
@@ -307,9 +357,9 @@ impl DocView {
         let page = self.layout.current_page();
         self.session.reading_mode = mode;
         self.session.last_page = page + 1;
-        self.scroll = 0.0;
+        self.jump_to(0.0);
         self.recompute_layout(viewport);
-        self.scroll = self.layout.scroll_for(page, 0.0);
+        self.jump_to(self.layout.scroll_for(page, 0.0));
         self.recompute_layout(viewport);
         self.dirty = true;
     }
@@ -684,6 +734,43 @@ mod tests {
         assert_eq!(rects.len(), 2, "{rects:?}");
         assert!((rects[0].w - 20.0).abs() < 0.01);
         assert_eq!(view.selected_text().as_deref(), Some("ab\nc"));
+    }
+
+    #[test]
+    fn smooth_scroll_eases_then_settles() {
+        let viewport = Size::new(400.0, 300.0);
+        let mut view = doc(4, viewport);
+        assert!(!view.is_scrolling());
+        // A jump is immediate.
+        let start = view.scroll;
+        view.scroll_by(100.0, viewport);
+        assert!((view.scroll - (start + 100.0)).abs() < 0.01);
+        assert!(!view.is_scrolling());
+
+        // An animated scroll only records the target first.
+        let before = view.scroll;
+        view.scroll_to(before + 400.0, viewport, true);
+        assert!(view.is_scrolling());
+        assert!((view.scroll - before).abs() < 0.01, "nothing moves until ticked");
+        let mut steps = 0;
+        while view.animate_scroll(0.016, viewport) {
+            steps += 1;
+            assert!(steps < 200, "the animation must terminate");
+        }
+        assert!(steps >= 3, "eased over several frames ({steps})");
+        assert!((view.scroll - (before + 400.0)).abs() < 0.5, "lands on the target");
+        assert!(!view.is_scrolling());
+
+        // A jump cancels an animation in flight.
+        view.scroll_to(view.scroll + 200.0, viewport, true);
+        assert!(view.is_scrolling());
+        view.goto_page(0, viewport);
+        assert!(!view.is_scrolling(), "page jumps cancel the animation");
+
+        // Targets are clamped to the document.
+        view.scroll_to(1.0e9, viewport, true);
+        while view.animate_scroll(0.016, viewport) {}
+        assert!(view.scroll <= view.layout.max_scroll() + 0.01);
     }
 
     #[test]

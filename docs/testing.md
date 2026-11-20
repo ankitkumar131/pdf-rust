@@ -61,6 +61,9 @@ the first page is rendered, and returns the app. Tests then:
 * run search and step through hits, checking the page changes and highlights are
   laid out in PDF space, and round-trip a highlight through the database
   (`highlight_round_trips_through_the_database`),
+* scroll with the wheel and `Page Down` and assert smooth scrolling eases over
+  several frames, is monotonic, lands on the target and can be switched off
+  (`smooth_scrolling_eases_towards_the_target`),
 * open several documents into tabs, switch between them and check that each keeps
   its own page (`tabs_and_single_page_mode`),
 * read 30 pages at 150 % zoom with the cache pinned to 8 MB and assert the budget

@@ -88,6 +88,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - The page cache never evicts the page being displayed, even when one bitmap is
   larger than the whole budget; `extended_reading_keeps_the_cache_bounded` and two
   cache unit tests cover the bound.
+- Smooth scrolling: wheel and keyboard scrolling eases towards the target over a
+  few frames (60 ms time constant) instead of jumping, with a real toggle in the
+  Settings dialog. Page jumps, zoom and outline clicks cancel an animation in
+  flight.
+- Removed the unused `confirm_close` preference (it had no effect).
+- Smooth scrolling: wheel and `Page Up`/`Page Down` motion eases towards the target
+  over a few frames (60 ms time constant) instead of jumping, and the setting is a
+  real toggle in the Settings dialog. Page jumps, zoom and outline clicks cancel an
+  animation in flight.
+- Removed the unused `confirm_close` preference (it had no effect).
 
 ### Documentation
 - `docs/architecture.md`, `docs/testing.md`, `docs/packaging.md`.

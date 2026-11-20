@@ -650,3 +650,62 @@ fn extended_reading_keeps_the_cache_bounded() {
     }));
     assert_eq!(app.active_doc().unwrap().current_page(), 0);
 }
+
+/// The "smooth scrolling" preference must actually change behaviour: with it on
+/// a wheel step eases towards the target over several frames, with it off the
+/// offset jumps immediately.
+#[test]
+fn smooth_scrolling_eases_towards_the_target() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-smooth");
+    let path = build_pdf(&dir, 6);
+    let mut app = App::new(Engine::start(), None, None);
+    app.window = Size::new(900.0, 700.0);
+    app.open_path(path, None);
+    let f = font();
+    let mut bmp = Bitmap::new(900, 700);
+    assert!(pump(&mut app, &mut bmp, &f, |app| {
+        app.active_doc().map(|d| d.is_ready()).unwrap_or(false)
+    }));
+
+    let mut wheel = input_none();
+    wheel.wheel = -1.0; // scroll down
+    wheel.mouse = Point::new(500.0, 400.0);
+
+    // Smooth: the wheel only records the target, the following frames ease
+    // towards it, and the motion is monotonic.
+    app.settings.smooth_scroll = true;
+    let before = app.active_doc().unwrap().scroll;
+    app.frame(&wheel, &mut bmp, &f);
+    assert!(app.active_doc().unwrap().is_scrolling(), "a smooth scroll is queued");
+    let mut last = app.active_doc().unwrap().scroll;
+    let mut steps = 0;
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        app.tick(app.now());
+        app.frame(&input_none(), &mut bmp, &f);
+        let now = app.active_doc().unwrap().scroll;
+        assert!(now >= last - 0.001, "the offset never jumps backwards");
+        if now > last + 0.01 {
+            steps += 1;
+        }
+        last = now;
+    }
+    assert!(steps >= 3, "the motion is spread over several frames (got {steps})");
+    assert!(!app.active_doc().unwrap().is_scrolling(), "the animation settles");
+    let travelled = last - before;
+    assert!(
+        (travelled - 60.0).abs() < 2.0,
+        "the wheel step lands 60 px down (moved {travelled:.1})"
+    );
+
+    // Without smoothing the same wheel step lands immediately.
+    app.settings.smooth_scroll = false;
+    let before = app.active_doc().unwrap().scroll;
+    app.frame(&wheel, &mut bmp, &f);
+    let after = app.active_doc().unwrap().scroll;
+    assert!(!app.active_doc().unwrap().is_scrolling());
+    assert!(after - before > 30.0, "an unsmoothed wheel step is ~60 px");
+}
