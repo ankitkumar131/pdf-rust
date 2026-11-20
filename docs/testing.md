@@ -18,7 +18,7 @@ cargo test --offline       # same, in a sandbox without crates.io access
 | Unit tests | inline `#[cfg(test)]` in `src/` | 131 | geometry, hashing, PNG, font metrics and glyph fallback, layout, zoom anchoring, cache `trim_to`/`keep_only`, memory pressure bands, session encoding, open-document list, private temp files, print scaling |
 | CLI tests | `src/main.rs` | 3 | argument parsing, defaults, `--stats`/`--selftest` acceptance |
 | Engine tests | `tests/pdf_engine.rs` | 10 | real PDFs through the PDFium worker |
-| Viewer tests | `tests/viewer.rs` | 32 | headless `App` behaviour end to end, including the shared cache budget, session recovery and the password flow |
+| Viewer tests | `tests/viewer.rs` | 34 | headless `App` behaviour end to end, including the shared cache budget, session recovery and the password flow (typed into the real dialog, plus a pixel check that it is masked) |
 
 `gen_fixtures` is an extra test target containing only ignored tests: it writes
 the synthetic documents used for manual profiling (`cargo test --test

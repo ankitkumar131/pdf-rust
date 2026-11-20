@@ -37,11 +37,12 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
 | 8 | Linux .deb / AppImage, MIME registration | **done** | `.deb` built and inspected in the sandbox |
 | 9 | Cross-platform testing, security review, release | **done (0.2.0)** | see the checklists below |
 | 10 | One global memory budget, session recovery, keyboard focus, glyph fallback | **done (0.2.0)** | `App::enforce_cache_budget`, `open_documents` table, `UiState::end_frame`, `Font::drawable` |
-| 11 | Annotations, page management, OCR, reading modes, library | planned | deliberately after the reliability round in 0.2.0 |
+| 11 | Password-protected documents fixed, prompt masked | **done (0.2.1)** | painter no longer drops the dialog before the action; `password_field` masks input |
+| 12 | Annotations, page management, OCR, reading modes, library | planned | deliberately after the reliability round in 0.2.0 |
 
 ## Verified so far
 
-* `cargo test` — 131 unit + 3 CLI + 10 PDF engine + 32 viewer tests (plus the
+* `cargo test` — 131 unit + 3 CLI + 10 PDF engine + 34 viewer tests (plus the
   fixture generators), all green, run in parallel against real PDFium 152.0.7934.
   Zero compiler warnings.
 * `cargo check --features win32-syntax-check` type-checks the Win32 shell and its

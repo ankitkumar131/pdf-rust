@@ -1537,7 +1537,7 @@ fn paint_password_dialog(ui: &mut Ui, d: &mut Dialogs, window: Rect, out: &mut V
     if ui.state.focus != Some(id("password-field")) {
         ui.state.focus = Some(id("password-field"));
     }
-    let resp = widgets::text_field(ui, id("password-field"), field, &mut dlg.field, "Password", false);
+    let resp = widgets::password_field(ui, id("password-field"), field, &mut dlg.field, "Password");
     if let Some(err) = dlg.error.clone() {
         ui.font.draw_text(
             ui.bmp,
@@ -1556,9 +1556,13 @@ fn paint_password_dialog(ui: &mut Ui, d: &mut Dialogs, window: Rect, out: &mut V
         return;
     }
     if widgets::button(ui, id("password-ok"), ok, "Unlock", true, true) || resp.submitted {
+        // The dialog stays until the app acts on the action: closing it here made
+        // `Action::PasswordSubmit` find nothing to do, so the document never opened.
         let password = dlg.field.text.clone();
-        d.password = None;
-        out.push(Action::PasswordSubmit(password));
+        out.push(Action::PasswordSubmit {
+            doc_index,
+            password,
+        });
     }
 }
 

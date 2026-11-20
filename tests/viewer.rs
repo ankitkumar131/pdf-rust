@@ -1098,7 +1098,10 @@ fn password_protected_documents_prompt_and_retry() {
     assert!(app.dialogs.error.is_none(), "a password is not a fatal error");
 
     // Wrong password: the dialog comes back with an explanation.
-    app.apply_action(Action::PasswordSubmit("nope".into()));
+    app.apply_action(Action::PasswordSubmit {
+        doc_index: 0,
+        password: "nope".into(),
+    });
     assert!(pump(&mut app, &mut bmp, &f, |app| {
         app.dialogs.password.as_ref().map(|d| d.error.is_some()).unwrap_or(false)
     }), "a rejected password reopens the prompt");
@@ -1106,7 +1109,10 @@ fn password_protected_documents_prompt_and_retry() {
     assert_eq!(app.docs.len(), 1, "the document keeps its tab");
 
     // Correct password: the document opens.
-    app.apply_action(Action::PasswordSubmit("s3cret".into()));
+    app.apply_action(Action::PasswordSubmit {
+        doc_index: 0,
+        password: "s3cret".into(),
+    });
     assert!(pump(&mut app, &mut bmp, &f, |app| {
         app.docs.first().map(|d| d.is_ready()).unwrap_or(false)
     }), "the right password opens the document");
@@ -1128,6 +1134,98 @@ fn password_protected_documents_prompt_and_retry() {
     assert!(app.dialogs.password.is_none());
     assert_eq!(app.docs.len(), before - 1, "cancelling closes the tab");
     assert_eq!(app.active_doc().map(|d| d.title.as_str()), Some("locked.pdf"));
+}
+
+/// Reproduces the reported bug the way a user hits it: open an encrypted PDF,
+/// *type* the password into the dialog and press Enter.
+#[test]
+fn typing_the_password_into_the_dialog_opens_the_document() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-password-typing");
+    let mut builder = PdfBuilder::new(vec![
+        TestPage::a4(0).with_text(&["Locked page"]),
+        TestPage::a4(0).with_text(&["Second locked page"]),
+    ]);
+    builder.encrypt = Some(("s3cret".into(), "owner".into()));
+    let path = builder.write_to(&dir.join("locked.pdf"));
+
+    let mut app = App::new(Engine::start(), None, None);
+    app.window = Size::new(1000.0, 800.0);
+    app.open_path(path, None);
+    let f = font();
+    let mut bmp = Bitmap::new(1000, 800);
+    assert!(pump(&mut app, &mut bmp, &f, |a| a.dialogs.password.is_some()));
+
+    // Type it, exactly as the keyboard shell would: characters first, then Enter.
+    for ch in "s3cret".chars() {
+        let mut input = input_none();
+        input.text = ch.to_string();
+        app.frame(&input, &mut bmp, &f);
+    }
+    let typed = app.dialogs.password.as_ref().map(|d| d.field.text.clone());
+    assert_eq!(typed.as_deref(), Some("s3cret"), "the field holds the typed password");
+    app.frame(&press(Key::Enter, false, false), &mut bmp, &f);
+    app.frame(&input_none(), &mut bmp, &f);
+    assert!(app.dialogs.password.is_none(), "the dialog closes on Enter");
+    assert!(
+        pump(&mut app, &mut bmp, &f, |a| a.docs.first().map(|d| d.is_ready()).unwrap_or(false)),
+        "the document opens: state {:?}, error {:?}",
+        app.docs.first().map(|d| format!("{:?}", d.state)),
+        app.docs.first().and_then(|d| d.error.clone())
+    );
+}
+
+/// The password prompt must never paint what was typed: the same frame rendered
+/// for two different passwords of equal length has to be pixel-identical.
+#[test]
+fn the_password_field_masks_what_is_typed() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-password-mask");
+    let mut builder = PdfBuilder::new(vec![TestPage::a4(0).with_text(&["Locked"])]);
+    builder.encrypt = Some(("s3cret".into(), "owner".into()));
+    let path = builder.write_to(&dir.join("locked.pdf"));
+
+    let mut app = App::new(Engine::start(), None, None);
+    app.window = Size::new(1000.0, 800.0);
+    app.open_path(path, None);
+    let f = font();
+    let mut bmp = Bitmap::new(1000, 800);
+    assert!(pump(&mut app, &mut bmp, &f, |a| a.dialogs.password.is_some()));
+    // The dialog geometry, mirroring `chrome::paint_password_dialog`.
+    let frame = Rect::new(290.0, 294.0, 420.0, 212.0);
+    let inner = Rect::new(frame.x + 20.0, frame.y + 60.0, frame.w - 40.0, frame.h - 78.0);
+    let field = Rect::new(inner.x, inner.y + 28.0, inner.w, 30.0);
+
+    let render_with = |text: &str, app: &mut App, bmp: &mut Bitmap| -> Vec<u32> {
+        if let Some(dialog) = app.dialogs.password.as_mut() {
+            dialog.field.text = text.to_string();
+            dialog.field.caret = text.len();
+        }
+        app.frame(&input_none(), bmp, &f);
+        let mut px = Vec::new();
+        for y in field.y as u32..(field.bottom() as u32) {
+            for x in field.x as u32..(field.right() as u32) {
+                px.push(bmp.px[(y * bmp.width + x) as usize]);
+            }
+        }
+        px
+    };
+
+    let secret = render_with("s3cret", &mut app, &mut bmp);
+    let other = render_with("XXXXXX", &mut app, &mut bmp);
+    assert_eq!(secret, other, "the field paints bullets, not the password");
+    // A different length still shows a difference (one bullet more).
+    let longer = render_with("s3cret1", &mut app, &mut bmp);
+    assert_ne!(secret, longer, "the field still shows how much was typed");
+    // The text itself is genuinely in the field.
+    assert_eq!(
+        app.dialogs.password.as_ref().map(|d| d.field.text.as_str()),
+        Some("s3cret1")
+    );
 }
 
 /// Closing one tab must leave the other documents open.

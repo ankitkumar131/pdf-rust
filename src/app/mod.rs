@@ -284,7 +284,8 @@ pub enum Action {
     DeleteHighlight(i64),
     OpenUrl(String),
     ResumeAnswer { resume: bool, remember: bool },
-    PasswordSubmit(String),
+    /// The password prompt was answered for the document at `doc_index`.
+    PasswordSubmit { doc_index: usize, password: String },
     /// The password prompt was dismissed: the document cannot be opened.
     PasswordCancel(usize),
     DismissError,
@@ -846,6 +847,19 @@ impl App {
         }
     }
 
+    /// Shows the password prompt for the document at `index`.
+    fn prompt_for_password(&mut self, index: usize, error: Option<String>) {
+        let Some(doc) = self.docs.get(index) else {
+            return;
+        };
+        self.dialogs.password = Some(PasswordDialog {
+            doc_index: index,
+            document: doc.identity.display_name.clone(),
+            field: Default::default(),
+            error,
+        });
+    }
+
     /// Records the open documents (in tab order) and which tab is active.
     pub fn save_open_documents(&self) {
         let Some(db) = &self.db else {
@@ -1096,7 +1110,18 @@ impl App {
                         }
                     }
                 }
+                // The document opened: any password prompt for it is answered.
+                if self
+                    .dialogs
+                    .password
+                    .as_ref()
+                    .map(|d| d.doc_index == index)
+                    .unwrap_or(false)
+                {
+                    self.dialogs.password = None;
+                }
                 let doc = &mut self.docs[index];
+                doc.error = None;
                 doc.set_info(info.clone(), viewport);
                 doc.state = DocState::Ready(info.clone());
                 // Offer to resume when there is meaningful saved progress.
@@ -1131,25 +1156,24 @@ impl App {
             }
             Err(message) => {
                 use crate::pdf::engine::{classify_open_error, OpenFailure};
-                let document = self.docs[index].identity.display_name.clone();
                 match classify_open_error(&message) {
                     OpenFailure::PasswordRequired | OpenFailure::WrongPassword => {
                         let wrong = classify_open_error(&message) == OpenFailure::WrongPassword;
-                        let doc = &mut self.docs[index];
-                        doc.error = Some(message.clone());
-                        doc.state = DocState::NeedsPassword;
-                        // A rejected password keeps the dialog open with the
-                        // field cleared, so the user can simply try again.
-                        self.dialogs.password = Some(PasswordDialog {
-                            doc_index: index,
-                            document,
-                            field: Default::default(),
-                            error: if wrong {
+                        {
+                            let doc = &mut self.docs[index];
+                            doc.error = Some(message.clone());
+                            doc.state = DocState::NeedsPassword;
+                        }
+                        // A rejected password keeps the prompt up with the field
+                        // cleared, so the user can simply try again.
+                        self.prompt_for_password(
+                            index,
+                            if wrong {
                                 Some("That password did not unlock the document. Try again.".to_string())
                             } else {
                                 None
                             },
-                        });
+                        );
                     }
                     OpenFailure::Other => {
                         let doc = &mut self.docs[index];
@@ -2056,18 +2080,31 @@ impl App {
                     }
                 }
             }
-            Action::PasswordSubmit(password) => {
-                if let Some(dialog) = self.dialogs.password.take() {
-                    if let Some(doc) = self.docs.get(dialog.doc_index) {
-                        let id = doc.id;
-                        let path = doc.identity.path.clone();
-                        self.engine.send(PdfCommand::Open {
-                            id,
-                            path,
-                            password: Some(password),
-                        });
-                    }
+            Action::PasswordSubmit {
+                doc_index,
+                password,
+            } => {
+                // Close the prompt first: the document either opens (and the tab
+                // shows it) or the engine rejects the password and the prompt comes
+                // back with an explanation.
+                self.dialogs.password = None;
+                if password.is_empty() {
+                    self.prompt_for_password(doc_index, Some("Enter the password for this document.".to_string()));
+                    return;
                 }
+                let Some(doc) = self.docs.get_mut(doc_index) else {
+                    return;
+                };
+                let id = doc.id;
+                let path = doc.identity.path.clone();
+                doc.error = None;
+                doc.state = DocState::Loading;
+                self.engine.send(PdfCommand::Open {
+                    id,
+                    path,
+                    password: Some(password),
+                });
+                self.redraw = true;
             }
             Action::DismissError | Action::Escape => {
                 if self.dialogs.error.is_some() {

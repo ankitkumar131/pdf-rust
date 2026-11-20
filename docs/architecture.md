@@ -227,7 +227,10 @@ The engine boundary is treated as hostile input:
   clamped to 8192 px per side and 40 MP total.
 * Open errors are classified (`OpenFailure::PasswordRequired/WrongPassword/Other`)
   instead of guessed from text, which is what lets a wrong password re-prompt
-  rather than fail the document.
+  rather than fail the document. The prompt is state on `Dialogs`, and the
+  submitted password travels in `Action::PasswordSubmit { doc_index, password }`
+  so the answer can never be handed to the wrong document — or dropped because the
+  painter closed the dialog first (the 0.2.1 bug).
 * Print scratch files live in a `PrivateTempDir` (`0700`, unpredictable name, file
   restricted to `0600`) that removes itself when the job finishes.
 * External links are limited to `http`/`https`/`mailto`; JavaScript and launch

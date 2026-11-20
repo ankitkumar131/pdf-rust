@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.1] — 2026-11-20
+
+Fixes password-protected documents, which could not be opened at all in 0.2.0.
+See the [release notes](docs/release-0.2.1.md).
+
+### Fixed — password-protected documents
+- **A protected document now opens once the password is entered.** The prompt
+  cleared itself *before* the "password submitted" action was dispatched, so the
+  handler found no prompt to read the password from, sent nothing to the engine,
+  and the document stayed on the "Password required" placeholder — no matter how
+  many times the correct password was typed. The dialog now stays until the action
+  is handled, and the action carries the document it belongs to plus the typed
+  password, so it cannot silently do nothing.
+- The password field **masks what is typed** (one bullet per character through the
+  same measurement path as normal text, so the caret, selection and clipping stay
+  exact). Previously the password was painted in clear.
+- Pressing **Unlock or Enter** with an empty field now says so instead of sending
+  an empty password and bouncing off the engine.
+- Unlocking shows the loading state in the tab until the engine answers, and a
+  successful unlock clears the stale "password required" error, so the page is
+  painted immediately instead of the placeholder.
+- The prompt is also dismissed when a document opens through any other path, and
+  cancelling still closes only that tab.
+
 ## [0.2.0] — 2026-11-20
 
 Reliability release: one memory budget for every open document, a hardened PDF

@@ -375,6 +375,35 @@ pub fn text_field(
     placeholder: &str,
     monospace_center: bool,
 ) -> TextResponse {
+    text_field_impl(ui, id, r, state, placeholder, monospace_center, false)
+}
+
+/// A text field that shows bullets instead of the characters it holds.
+///
+/// Used for document passwords: nothing that is typed is ever painted on screen
+/// (and a screenshot or a shoulder-surfer sees only the length).
+pub fn password_field(
+    ui: &mut Ui,
+    id: Id,
+    r: Rect,
+    state: &mut TextField,
+    placeholder: &str,
+) -> TextResponse {
+    text_field_impl(ui, id, r, state, placeholder, false, true)
+}
+
+/// One character of a masked field.
+const MASK_CHAR: char = '\u{2022}';
+
+fn text_field_impl(
+    ui: &mut Ui,
+    id: Id,
+    r: Rect,
+    state: &mut TextField,
+    placeholder: &str,
+    monospace_center: bool,
+    masked: bool,
+) -> TextResponse {
     let mut resp = TextResponse::default();
     let clicked = ui.interact(id, r, true);
     if clicked {
@@ -384,10 +413,11 @@ pub fn text_field(
         let rel = ui.input.mouse.x - (r.x + 8.0) - state.scroll_x;
         let mut acc = 0.0;
         let mut caret = state.text.len();
-        for (idx, ch) in state.text.char_indices() {
-            let w = ui.font.text_width(&ch.to_string(), Metrics::TEXT_SIZE);
+        for (char_index, ch) in state.text.chars().enumerate() {
+            let shown = if masked { MASK_CHAR } else { ch };
+            let w = ui.font.text_width(&shown.to_string(), Metrics::TEXT_SIZE);
             if acc + w * 0.5 > rel {
-                caret = idx;
+                caret = byte_offset_of_char(&state.text, char_index);
                 break;
             }
             acc += w;
@@ -481,10 +511,19 @@ pub fn text_field(
 
     let pad = 8.0;
     let inner_h = r.h;
-    // Keep the caret visible.
-    let caret_x_in_text = ui
-        .font
-        .text_width(&state.text[..state.caret.min(state.text.len())], Metrics::TEXT_SIZE);
+    // Keep the caret visible. With a mask the painted text is one bullet per
+    // character, so widths are measured against that.
+    let caret_chars = if masked {
+        state.text[..state.caret.min(state.text.len())].chars().count()
+    } else {
+        0
+    };
+    let caret_x_in_text = if masked {
+        caret_chars as f32 * mask_advance(ui)
+    } else {
+        ui.font
+            .text_width(&state.text[..state.caret.min(state.text.len())], Metrics::TEXT_SIZE)
+    };
     let text_area_w = r.w - pad * 2.0;
     if caret_x_in_text - state.scroll_x > text_area_w - 2.0 {
         state.scroll_x = caret_x_in_text - text_area_w + 2.0;
@@ -500,8 +539,19 @@ pub fn text_field(
     let clip_x0 = r.x + pad;
     // Selection highlight.
     if let Some((a, b)) = state.selection() {
-        let x0 = clip_x0 + ui.font.text_width(&state.text[..a], Metrics::TEXT_SIZE) - state.scroll_x;
-        let x1 = clip_x0 + ui.font.text_width(&state.text[..b], Metrics::TEXT_SIZE) - state.scroll_x;
+        let (wa, wb) = if masked {
+            (
+                state.text[..a].chars().count() as f32 * mask_advance(ui),
+                state.text[..b].chars().count() as f32 * mask_advance(ui),
+            )
+        } else {
+            (
+                ui.font.text_width(&state.text[..a], Metrics::TEXT_SIZE),
+                ui.font.text_width(&state.text[..b], Metrics::TEXT_SIZE),
+            )
+        };
+        let x0 = clip_x0 + wa - state.scroll_x;
+        let x1 = clip_x0 + wb - state.scroll_x;
         ui.bmp.fill_rect(
             Rect::new(x0.max(clip_x0), r.y + 4.0, (x1 - x0).max(1.0), r.h - 8.0),
             theme.selection,
@@ -518,6 +568,11 @@ pub fn text_field(
             theme.text_disabled,
             placeholder,
         );
+    } else if masked {
+        let bullets: String = std::iter::repeat(MASK_CHAR)
+            .take(state.text.chars().count())
+            .collect();
+        draw_clipped_text(ui, draw_x, baseline, &bullets, r);
     } else {
         draw_clipped_text(ui, draw_x, baseline, &state.text, r);
     }
@@ -533,6 +588,19 @@ pub fn text_field(
     }
     let _ = (monospace_center, Point::ZERO);
     resp
+}
+
+/// Advance of one bullet, so a masked field keeps a steady rhythm.
+fn mask_advance(ui: &Ui) -> f32 {
+    ui.font.text_width(&MASK_CHAR.to_string(), Metrics::TEXT_SIZE)
+}
+
+/// Byte offset of the `index`-th character in `text`.
+fn byte_offset_of_char(text: &str, index: usize) -> usize {
+    text.char_indices()
+        .nth(index)
+        .map(|(offset, _)| offset)
+        .unwrap_or(text.len())
 }
 
 fn draw_clipped_text(ui: &mut Ui, x: f32, baseline: f32, text: &str, clip: Rect) {
