@@ -15,10 +15,10 @@ cargo test --offline       # same, in a sandbox without crates.io access
 
 | Layer | Where | Count | What it proves |
 | --- | --- | --- | --- |
-| Unit tests | inline `#[cfg(test)]` in `src/` | 114 | geometry, hashing, PNG, font metrics, layout, zoom anchoring, cache eviction, session encoding, print scaling |
+| Unit tests | inline `#[cfg(test)]` in `src/` | 115 | geometry, hashing, PNG, font metrics, layout, zoom anchoring, cache eviction, session encoding, print scaling |
 | CLI tests | `src/main.rs` | 3 | argument parsing, defaults, `--stats`/`--selftest` acceptance |
 | Engine tests | `tests/pdf_engine.rs` | 10 | real PDFs through the PDFium worker |
-| Viewer tests | `tests/viewer.rs` | 19 | headless `App` behaviour end to end |
+| Viewer tests | `tests/viewer.rs` | 28 | headless `App` behaviour end to end |
 
 `gen_fixtures` is an extra test target containing only ignored tests: it writes
 the synthetic documents used for manual profiling (`cargo test --test
@@ -72,7 +72,15 @@ the first page is rendered, and returns the app. Tests then:
   specification asks for,
 * paint frames and check pixels (for example that the page content region is not
   uniform, that the selection overlay changes the frame, that the toast appears
-  and expires).
+  and expires, and that a page scrolled halfway off the viewport leaves the two
+  toolbar rows above the reading area untouched — the "page painted over the
+  toolbar" regression),
+* click the ✕ in the Settings dialog and in the toolbar and assert the theme,
+  smooth scrolling and resume policy change *and persist*, that only the clicked
+  document closes, that the toolbar ✕ never quits with a document open, that the
+  checkbox widget reports clicks rather than values, that clicking a thumbnail
+  navigates to its page, and that search finds a match on the last page of a
+  twelve page document.
 
 ### Unit tests
 

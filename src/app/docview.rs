@@ -62,7 +62,10 @@ pub struct SearchState {
     /// Page currently being searched by the worker.
     pub scanning_page: Option<u32>,
     pub active: bool,
+    /// True once every page of the document has been searched for this query.
     pub no_more_pages: bool,
+    /// Pages already searched with the current [`SearchState::token`].
+    pub scanned: u32,
     /// Monotonic id so stale worker replies can be ignored.
     pub token: u64,
 }
@@ -344,6 +347,10 @@ impl DocView {
         self.session.last_page = anchor_page + 1;
         self.cache.clear();
         self.pending_renders.clear();
+        // Thumbnails are rendered in the document orientation, so they have to be
+        // drawn again or the sidebar would keep showing the old rotation.
+        self.thumbs.clear();
+        self.pending_thumbs.clear();
         self.recompute_layout(viewport);
         self.jump_to(self.layout.scroll_for(anchor_page, anchor_frac));
         self.recompute_layout(viewport);
@@ -554,22 +561,26 @@ impl DocView {
     }
 
     /// Applies a fresh search result page from the worker.
-    pub fn apply_search_hits(&mut self, page: u32, mut hits: Vec<SearchHit>) -> bool {
+    /// Marks `page` as searched and appends its matches.
+    ///
+    /// Returns `(hits_before, hits_after)` so the caller can tell whether this
+    /// page produced the very first match of the search, and `None`/ nothing when
+    /// `page` is not the page the worker was asked about (a stale reply).
+    pub fn apply_search_hits(&mut self, page: u32, mut hits: Vec<SearchHit>) -> Option<(usize, usize)> {
         if self.search.scanning_page != Some(page) {
-            return false;
+            return None;
         }
         self.search.scanning_page = None;
-        if hits.is_empty() {
-            return false;
-        }
+        self.search.scanned = self.search.scanned.saturating_add(1);
+        let before = self.search.hits.len();
         hits.sort_by_key(|h| h.char_index);
-        let first_new = self.search.hits.len();
         let was_current_out_of_range = self.search.current >= self.search.hits.len();
+        let first_new = self.search.hits.len();
         self.search.hits.extend(hits);
-        if was_current_out_of_range {
+        if was_current_out_of_range && first_new < self.search.hits.len() {
             self.search.current = first_new;
         }
-        true
+        Some((before, self.search.hits.len()))
     }
 
     /// Total memory used by this document's bitmaps.

@@ -230,6 +230,48 @@ pub fn build_layout(
 }
 
 /// Zoom levels used by Ctrl+wheel and the zoom buttons.
+/// Height of the sidebar's tab strip.
+pub const SIDEBAR_TABS_H: f32 = 34.0;
+
+/// Tab strip of the sidebar.
+pub fn sidebar_tabs(area: Rect) -> Rect {
+    Rect::new(area.x, area.y, area.w - 1.0, SIDEBAR_TABS_H)
+}
+
+/// Scrollable body below the sidebar's tab strip.
+pub fn sidebar_body(area: Rect) -> Rect {
+    Rect::new(
+        area.x,
+        area.y + SIDEBAR_TABS_H + 1.0,
+        area.w - 1.0,
+        (area.h - SIDEBAR_TABS_H - 1.0).max(0.0),
+    )
+}
+
+/// Where the page thumbnails are drawn in the sidebar.
+///
+/// Shared by the painter and by [`crate::app::App::thumbnail_cells`] so hit
+/// testing, scrolling and drawing can never disagree.
+pub struct ThumbCells {
+    pub cells: Vec<Rect>,
+    pub content_h: f32,
+}
+
+pub fn thumbnail_cells(body: Rect, sizes: &[Size], scroll: f32) -> ThumbCells {
+    let pad = 10.0;
+    let cell_w = (body.w - pad * 2.0 - crate::ui::Metrics::SCROLLBAR_W).max(60.0);
+    let mut y = body.y + 8.0 - scroll;
+    let mut cells = Vec::with_capacity(sizes.len());
+    let mut content_h = 12.0;
+    for size in sizes {
+        let thumb_h = (cell_w * size.h / size.w.max(1.0)).clamp(40.0, 400.0);
+        cells.push(Rect::new(body.x + pad, y, cell_w, thumb_h));
+        content_h += thumb_h + 24.0;
+        y += thumb_h + 24.0;
+    }
+    ThumbCells { cells, content_h }
+}
+
 pub const ZOOM_STEPS: &[f32] = &[
     0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0,
 ];

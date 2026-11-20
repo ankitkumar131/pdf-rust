@@ -139,6 +139,8 @@ const WM_DROPFILES: u32 = 0x0233;
 const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SETTINGCHANGE: u32 = 0x001A;
 const WM_DPICHANGED: u32 = 0x02E0;
+const WM_SETICON: u32 = 0x0080;
+const WM_ERASEBKGND: u32 = 0x0014;
 
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
 const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
@@ -154,6 +156,25 @@ const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const VK_MENU: i32 = 0x12;
 const GWLP_USERDATA: i32 = -21;
+const ICON_SMALL: usize = 0;
+const ICON_BIG: usize = 1;
+const IMAGE_ICON: u32 = 1;
+const SM_CXICON: i32 = 11;
+const SM_CYICON: i32 = 12;
+const SM_CXSMICON: i32 = 49;
+const SM_CYSMICON: i32 = 50;
+const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOACTIVATE: u32 = 0x0010;
+/// Resource id of the application icon in `pdf-rust.rc`.
+const APP_ICON_ID: usize = 1;
+
+// DWM window attributes used to make the non-client frame follow the theme.
+const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+const DWMWA_USE_IMMERSIVE_DARK_MODE_OLD: u32 = 19;
+const DWMWA_BORDER_COLOR: u32 = 34;
+const DWMWA_CAPTION_COLOR: u32 = 35;
+/// `DWMWA_COLOR_NONE`: reset a colour attribute to the system default.
+const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -198,10 +219,43 @@ extern "system" {
     fn AdjustWindowRectEx(rect: *mut Rect32, style: u32, menu: Bool, ex_style: u32) -> Bool;
     fn SetProcessDPIAware() -> Bool;
     fn TrackMouseEvent(data: *mut TrackMouseEventData) -> Bool;
+    fn SendMessageW(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam) -> Lresult;
+    fn LoadIconW(instance: Hinstance, name: *const u16) -> Hicon;
+    fn LoadImageW(
+        instance: Hinstance,
+        name: *const u16,
+        kind: u32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> *mut c_void;
+    fn GetSystemMetrics(index: i32) -> i32;
+    fn GetClientRect(hwnd: Hwnd, rect: *mut Rect32) -> Bool;
+    fn ScreenToClient(hwnd: Hwnd, point: *mut Point32) -> Bool;
+    fn SetWindowPos(
+        hwnd: Hwnd,
+        after: Hwnd,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> Bool;
+    fn FillRect(hdc: Hdc, rect: *const Rect32, brush: Hbrush) -> i32;
+}
+
+// `dwmapi` is present on every supported Windows version, but the dark-frame
+// attributes only exist from Windows 10 1809 / Windows 11 onwards. Failures are
+// ignored so an older system simply keeps the default frame.
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmSetWindowAttribute(hwnd: Hwnd, attribute: u32, value: *const c_void, size: u32) -> i32;
 }
 
 #[link(name = "gdi32")]
 extern "system" {
+    fn CreateSolidBrush(color: u32) -> Hbrush;
+    fn DeleteObject(object: *mut c_void) -> Bool;
     fn StretchDIBits(
         hdc: Hdc,
         x_dest: i32,
@@ -313,6 +367,13 @@ struct Shell {
     input: Input,
     quit: bool,
     title: String,
+    /// Theme the window frame was last painted with (`None` before the first
+    /// frame, so the frame is styled on startup too).
+    frame_dark: Option<bool>,
+    /// Brush painted behind the client area while a frame is being blitted.
+    brush: Hbrush,
+    /// Colour of `brush`, `0x00BBGGRR` (Win32 `COLORREF`).
+    brush_color: u32,
 }
 
 static SHELL: std::sync::atomic::AtomicPtr<Shell> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
@@ -325,6 +386,106 @@ fn shell_ptr() -> Option<&'static mut Shell> {
         // SAFETY: the pointer is installed for the message loop's lifetime and
         // only used from the thread that owns the window.
         Some(unsafe { &mut *ptr })
+    }
+}
+
+/// `COLORREF` (`0x00BBGGRR`) for one of the UI colours.
+fn color_ref(c: crate::ui::Color) -> u32 {
+    ((c.b() as u32) << 16) | ((c.g() as u32) << 8) | c.r() as u32
+}
+
+/// Styles the non-client frame (title bar, border) to match the theme.
+///
+/// Windows 10 only gained `DWMWA_USE_IMMERSIVE_DARK_MODE` in 1809 and coloured
+/// borders/captions are Windows 11 features, so every attribute is best effort.
+fn apply_frame_theme(hwnd: Hwnd, dark: bool, shell: &mut Shell) {
+    let theme = if dark {
+        crate::ui::Theme::dark()
+    } else {
+        crate::ui::Theme::light()
+    };
+    let value: i32 = i32::from(dark);
+    // SAFETY: the attribute pointer/size pair describes an `i32`/`u32` value.
+    unsafe {
+        if DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &value as *const i32 as *const c_void,
+            std::mem::size_of::<i32>() as u32,
+        ) != 0
+        {
+            // Windows 10 1809-1909 used attribute 19.
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE_OLD,
+                &value as *const i32 as *const c_void,
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
+        let caption = if dark {
+            color_ref(theme.window_bg)
+        } else {
+            DWMWA_COLOR_NONE
+        };
+        let border = if dark {
+            color_ref(theme.divider)
+        } else {
+            DWMWA_COLOR_NONE
+        };
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &caption as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &border as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+    let wanted = color_ref(theme.window_bg);
+    if wanted != shell.brush_color {
+        // SAFETY: the old brush is ours; the new one replaces it immediately.
+        unsafe {
+            let brush = CreateSolidBrush(wanted);
+            if !brush.is_null() {
+                let old = shell.brush;
+                shell.brush = brush;
+                shell.brush_color = wanted;
+                if !old.is_null() {
+                    DeleteObject(old as *mut c_void);
+                }
+            }
+        }
+    }
+    shell.frame_dark = Some(dark);
+}
+
+/// Asks Windows for the icon resource embedded in the executable.
+///
+/// Without this the window falls back to the generic console/file icon even when
+/// the `.exe` carries an `RT_GROUP_ICON`.
+fn load_icons(shell: &Shell, hwnd: Hwnd) -> bool {
+    let _ = shell;
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let icon_id = APP_ICON_ID as *const u16;
+    // SAFETY: resource ids in the low word are resolved against the module.
+    unsafe {
+        let big_w = GetSystemMetrics(SM_CXICON);
+        let big_h = GetSystemMetrics(SM_CYICON);
+        let small_w = GetSystemMetrics(SM_CXSMICON);
+        let small_h = GetSystemMetrics(SM_CYSMICON);
+        let big = LoadImageW(instance, icon_id, IMAGE_ICON, big_w, big_h, 0);
+        let small = LoadImageW(instance, icon_id, IMAGE_ICON, small_w, small_h, 0);
+        if !big.is_null() {
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG as Wparam, big as Lparam);
+        }
+        if !small.is_null() {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL as Wparam, small as Lparam);
+        }
+        !(big.is_null() && small.is_null())
     }
 }
 
@@ -356,11 +517,28 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam
             unsafe {
                 let hdc = BeginPaint(hwnd, &mut paint);
                 if !hdc.is_null() {
-                    present(shell, hdc);
+                    present(shell, hdc, hwnd);
                 }
                 EndPaint(hwnd, &paint);
             }
             0
+        }
+        WM_ERASEBKGND => {
+            // Fill with the current theme background instead of the class brush so
+            // resizing never flashes a light rectangle in the dark theme.
+            let mut rect = Rect32::default();
+            // SAFETY: hdc comes from the message; the rectangle is local.
+            unsafe {
+                GetClientRect(hwnd, &mut rect);
+                if !shell.brush.is_null() {
+                    FillRect(wparam as Hdc, &rect, shell.brush);
+                }
+            }
+            1
+        }
+        WM_SETICON => {
+            // SAFETY: default handling installs the icons we just sent.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_SIZE => {
             let width = (lparam & 0xFFFF) as i32;
@@ -452,8 +630,19 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam
             0
         }
         WM_MOUSEWHEEL => {
+            // Wheel messages carry *screen* coordinates; the UI hit tests work in
+            // client space, so convert before deciding what to scroll.
+            let mut pt = Point32 {
+                x: (lparam & 0xFFFF) as i16 as i32,
+                y: ((lparam >> 16) & 0xFFFF) as i16 as i32,
+            };
+            // SAFETY: the point is local and the window handle is live.
+            unsafe {
+                ScreenToClient(hwnd, &mut pt);
+            }
+            shell.input.mouse = Point::new(pt.x as f32, pt.y as f32);
             let delta = ((wparam >> 16) & 0xFFFF) as i16 as f32 / 120.0;
-            shell.input.wheel = delta;
+            shell.input.wheel += delta;
             modifiers(&mut shell.input);
             0
         }
@@ -481,7 +670,27 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam
             shell.app.redraw = true;
             0
         }
-        WM_DPICHANGED => 0,
+        WM_DPICHANGED => {
+            // Windows hands us the rectangle the window should take for the new
+            // monitor; ignoring it leaves the window mis-sized after a drag
+            // between monitors.
+            if lparam != 0 {
+                // SAFETY: lparam points at a RECT valid for the duration of the call.
+                let suggested = unsafe { *(lparam as *const Rect32) };
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        suggested.left,
+                        suggested.top,
+                        suggested.right - suggested.left,
+                        suggested.bottom - suggested.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+            }
+            0
+        }
         WM_CLOSE => {
             shell.app.save_all();
             shell.quit = true;
@@ -505,9 +714,40 @@ extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: Wparam, lparam: Lparam
     }
 }
 
-fn present(shell: &mut Shell, hdc: Hdc) {
+fn present(shell: &mut Shell, hdc: Hdc, hwnd: Hwnd) {
     let bmp = &shell.bmp;
     if bmp.width == 0 || bmp.height == 0 {
+        return;
+    }
+    // Blit only the part of the frame that exists: the client area can be larger
+    // than the last rendered bitmap (a resize before the next frame) and anything
+    // drawn past the bitmap edge would show stale pixels.
+    let mut client = Rect32::default();
+    // SAFETY: the window handle is live and the rectangle is local.
+    let have_client = unsafe { GetClientRect(hwnd, &mut client) } != 0;
+    let (cx, cy) = if have_client {
+        (client.right.max(0), client.bottom.max(0))
+    } else {
+        (bmp.width as i32, bmp.height as i32)
+    };
+    if have_client && cx > bmp.width as i32 {
+        // Fill the sliver the bitmap does not cover with the theme background.
+        let strip = Rect32 {
+            left: bmp.width as i32,
+            top: 0,
+            right: cx,
+            bottom: cy,
+        };
+        if !shell.brush.is_null() {
+            // SAFETY: brush and device context are valid; the rect is local.
+            unsafe {
+                FillRect(hdc, &strip, shell.brush);
+            }
+        }
+    }
+    let draw_w = (cx.min(bmp.width as i32)).max(0);
+    let draw_h = (cy.min(bmp.height as i32)).max(0);
+    if draw_w == 0 || draw_h == 0 {
         return;
     }
     // Top-down 32bpp DIB whose byte layout matches 0xAARRGGBB little endian.
@@ -533,12 +773,12 @@ fn present(shell: &mut Shell, hdc: Hdc) {
             hdc,
             0,
             0,
-            bmp.width as i32,
-            bmp.height as i32,
+            draw_w,
+            draw_h,
             0,
             0,
-            bmp.width as i32,
-            bmp.height as i32,
+            draw_w,
+            draw_h,
             bmp.px.as_ptr() as *const u8,
             &info,
             DIB_RGB_COLORS,
@@ -648,6 +888,9 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
     let height = app.window.h.max(420.0) as i32;
     let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
     let class_name = wide("PdfRustWindowClass");
+    // The class icon is what the taskbar and Alt-Tab show; it comes from the
+    // resource compiled by build.rs, and is null when no resource compiler ran.
+    let app_icon = unsafe { LoadIconW(instance, APP_ICON_ID as *const u16) };
     let class = WndClassExW {
         cb_size: std::mem::size_of::<WndClassExW>() as u32,
         style: CS_DBLCLKS,
@@ -655,13 +898,13 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
         cls_extra: 0,
         wnd_extra: 0,
         instance,
-        icon: std::ptr::null_mut(),
+        icon: app_icon,
         // SAFETY: IDC_ARROW is a predefined cursor resource.
         cursor: unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) },
         background: COLOR_WINDOW as Hbrush,
         menu_name: std::ptr::null(),
         class_name: class_name.as_ptr(),
-        icon_small: std::ptr::null_mut(),
+        icon_small: app_icon,
     };
     // SAFETY: the class structure is valid for the call.
     let atom = unsafe { RegisterClassExW(&class) };
@@ -712,8 +955,15 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
         input: Input::default(),
         quit: false,
         title: String::new(),
+        frame_dark: None,
+        brush: std::ptr::null_mut(),
+        brush_color: 0,
     });
     SHELL.store(&mut *shell as *mut Shell, std::sync::atomic::Ordering::Release);
+    // Style the frame (and the background brush) before the window is visible so
+    // the dark theme never flashes a white title bar.
+    apply_frame_theme(hwnd, shell.app.settings.dark, &mut shell);
+    load_icons(&shell, hwnd);
     // SAFETY: show the window and start the 16 ms animation timer.
     unsafe {
         ShowWindow(hwnd, SW_SHOW);
@@ -756,6 +1006,21 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
             let input = shell.input.clone();
             shell.app.frame(&input, bmp, font);
             shell.input.clear_transient();
+            if shell.frame_dark != Some(shell.app.settings.dark) {
+                apply_frame_theme(hwnd, shell.app.settings.dark, shell.as_mut());
+            }
+            // Keep the frame buffer the same size as the client area, even if a
+            // resize message was missed (maximise from the taskbar, DPI change).
+            let mut client = Rect32::default();
+            // SAFETY: the window handle is live; the rectangle is local.
+            let have_client = unsafe { GetClientRect(hwnd, &mut client) } != 0;
+            if have_client {
+                let (cw, ch) = (client.right.max(1) as u32, client.bottom.max(1) as u32);
+                if cw != shell.bmp.width || ch != shell.bmp.height {
+                    shell.bmp = Bitmap::new(cw, ch);
+                    shell.app.window = Size::new(cw as f32, ch as f32);
+                }
+            }
             let title = crate::platform::window_title(shell.app.active_doc().map(|d| d.title.as_str()));
             if title != shell.title {
                 shell.title = title.clone();
@@ -784,11 +1049,15 @@ pub fn run(app: App, font: Font) -> Result<(), String> {
         }
     }
     shell.app.save_all();
-    // SAFETY: teardown of the timer and the shell pointer.
+    // SAFETY: teardown of the timer, the brush and the shell pointer.
     unsafe {
         KillTimer(hwnd, 1);
         if !hwnd.is_null() {
             DestroyWindow(hwnd);
+        }
+        if !shell.brush.is_null() {
+            DeleteObject(shell.brush as *mut c_void);
+            shell.brush = std::ptr::null_mut();
         }
     }
     SHELL.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);

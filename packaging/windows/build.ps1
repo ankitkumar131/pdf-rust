@@ -9,8 +9,9 @@
       pdf-rust-<version>-win64.zip portable archive
       pdf-rust-<version>-setup.exe NSIS installer (when makensis is available)
 
-    Run from a "x64 Native Tools" prompt for the MSVC resource compiler, or with
-    a MinGW toolchain on PATH so build.rs can use windres.
+    build.rs locates the resource compiler itself (a MinGW windres on PATH, or
+    rc.exe/cvtres.exe from the installed Windows SDK and MSVC toolchain), so a
+    normal shell is enough; the .exe gets its icon and version stamp either way.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
@@ -54,6 +55,26 @@ try {
 
     $exe = Join-Path $root "target\release\pdf-rust.exe"
     if (-not (Test-Path $exe)) { throw "missing $exe" }
+
+    # The viewer must be a GUI-subsystem binary: a console subsystem makes Windows
+    # open a terminal window every time a PDF is opened from Explorer.
+    $bytes = [System.IO.File]::ReadAllBytes($exe)
+    $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+    $subsystem = [System.BitConverter]::ToUInt16($bytes, $peOffset + 0x5C)
+    if ($subsystem -ne 2) {
+        throw "pdf-rust.exe uses subsystem $subsystem, expected 2 (WINDOWS): it would open a console window"
+    }
+    Write-Host "==> subsystem: WINDOWS (no console window)"
+
+    # The icon and version stamp come from build.rs; a missing version resource
+    # means rc.exe/cvtres.exe were not found and the exe would show a generic icon.
+    $versionInfo = (Get-Item $exe).VersionInfo
+    if (-not $versionInfo.FileDescription) {
+        Write-Warning "pdf-rust.exe has no version resource: the icon and version stamp were not embedded (install the Windows SDK, or set PDFRUST_RESOURCE_COMPILER)"
+    } else {
+        Write-Host "==> resources: $($versionInfo.FileDescription) $($versionInfo.FileVersion)"
+    }
+
     Copy-Item $exe (Join-Path $pkg "pdf-rust.exe") -Force
     Copy-Item $PdfiumDll (Join-Path $pkg "pdfium.dll") -Force
     foreach ($doc in "README.md", "CHANGELOG.md", "LICENSE") {

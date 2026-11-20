@@ -15,6 +15,12 @@
 //!       --screenshot <png> Render one frame headlessly and write it as a PNG
 //! ```
 
+// A PDF reader must not open a console window when Windows launches it from
+// Explorer or from a file association. Command-line output (`--help`,
+// `--selftest`, warnings) is still visible because `attach_console` borrows the
+// terminal the process was started from.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -381,7 +387,58 @@ fn run(options: Options) -> Result<(), String> {
     Ok(())
 }
 
+/// Attaches the GUI-subsystem process to the console it was launched from.
+///
+/// Without this, `pdf-rust --help` in a terminal would print nothing because a
+/// `windows` subsystem binary starts with no standard handles. When the process
+/// was started from Explorer there is no parent console and this is a no-op, so
+/// double-clicking a PDF never opens a terminal window.
+#[cfg(any(windows, feature = "win32-syntax-check"))]
+#[allow(dead_code)]
+fn attach_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    /// `ATTACH_PARENT_PROCESS`
+    const ATTACH_PARENT: u32 = 0xFFFF_FFFF;
+    // SAFETY: attaching only borrows the parent's console; failure is expected
+    // when there is no parent console and is safe to ignore.
+    unsafe {
+        AttachConsole(ATTACH_PARENT);
+    }
+}
+
+/// Reports a fatal startup error to a user who has no console to read it on.
+#[cfg(any(windows, feature = "win32-syntax-check"))]
+#[allow(dead_code)]
+fn report_gui_error(message: &str) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(hwnd: *mut core::ffi::c_void, text: *const u16, title: *const u16, flags: u32) -> i32;
+        fn GetConsoleWindow() -> *mut core::ffi::c_void;
+    }
+    /// `MB_OK | MB_ICONERROR`
+    const MB_OK_ICONERROR: u32 = 0x0000_0010;
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+    // SAFETY: read-only query; the strings outlive the call.
+    unsafe {
+        if GetConsoleWindow().is_null() {
+            let text = wide(&format!("{}\n\nTry `pdf-rust --help`.", message));
+            let title = wide(pdf_rust::APP_NAME);
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                0x0000_0001 | MB_OK_ICONERROR,
+            );
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    #[cfg(any(windows, feature = "win32-syntax-check"))]
+    attach_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match parse_args(&args).and_then(|options| match options {
         Some(options) => run(options),
@@ -391,6 +448,8 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("pdf-rust: {}", message);
             eprintln!("Try `pdf-rust --help`.");
+            #[cfg(windows)]
+            report_gui_error(&message);
             ExitCode::FAILURE
         }
     }

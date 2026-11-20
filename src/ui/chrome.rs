@@ -83,7 +83,12 @@ pub fn paint(ui: &mut Ui, c: &mut Chrome) {
             paint_sidebar(ui, c);
         }
     }
+    // Pages are laid out from the top of the scrollable document, so a page can
+    // start above the reading area while scrolling. Clip so nothing spills into
+    // the toolbar, the tab bar or the sidebar.
+    let clip = ui.bmp.push_clip(c.regions.content);
     paint_content(ui, c);
+    ui.bmp.pop_clip(clip);
     if !c.presentation {
         paint_status(ui, c);
     } else {
@@ -268,8 +273,33 @@ fn paint_toolbar(ui: &mut Ui, c: &mut Chrome) {
     if widgets::icon_button(ui, id("tb-info"), slots[6], Icon::Info, true, false) {
         local.push(Action::ShowDialog(DialogKind::Info));
     }
+    // With a document open this closes the document, not the window: closing one
+    // PDF must never take the other documents (or the app) with it.
     if widgets::icon_button(ui, id("tb-close"), slots[7], Icon::Close, true, false) {
-        local.push(Action::Quit);
+        if has_doc {
+            local.push(Action::CloseDoc(*c.active));
+        } else {
+            local.push(Action::Quit);
+        }
+    }
+    let labels = [
+        "Search all pages (Ctrl+F)",
+        "Print",
+        "Full screen (F11)",
+        "Presentation mode (F5)",
+        "Toggle dark theme (Ctrl+D)",
+        "Settings",
+        "Document information",
+        if has_doc {
+            "Close this document (Ctrl+W)"
+        } else {
+            "Quit pdf-rust"
+        },
+    ];
+    for (slot, label) in slots.iter().zip(labels) {
+        if ui.hovered(*slot) {
+            ui.request_tooltip(label, slot.center());
+        }
     }
     c.actions.extend(local);
 }
@@ -325,7 +355,7 @@ fn paint_sidebar(ui: &mut Ui, c: &mut Chrome) {
     ui.bmp.fill_rect(r, ui.theme.sidebar_bg);
     ui.divider_v(Rect::new(r.right() - 1.0, r.y, 1.0, r.h));
 
-    let tabs = Rect::new(r.x, r.y, r.w - 1.0, 34.0);
+    let tabs = crate::app::layout::sidebar_tabs(r);
     let tab_w = tabs.w / 4.0;
     let mut picked: Option<SidebarTab> = None;
     for (i, tab) in [
@@ -355,14 +385,16 @@ fn paint_sidebar(ui: &mut Ui, c: &mut Chrome) {
         action(c, Action::SetSidebarTab(tab));
     }
     ui.divider_h(Rect::new(r.x, tabs.bottom(), r.w, 1.0));
-    let body = Rect::new(r.x, tabs.bottom() + 1.0, r.w - 1.0, r.h - tabs.h - 1.0);
+    let body = crate::app::layout::sidebar_body(r);
 
+    let clip = ui.bmp.push_clip(body);
     match c.sidebar.tab {
         SidebarTab::Thumbnails => paint_thumbnails(ui, c, body),
         SidebarTab::Outline => paint_outline(ui, c, body),
         SidebarTab::Search => paint_search(ui, c, body),
         SidebarTab::Recent => paint_recent(ui, c, body),
     }
+    ui.bmp.pop_clip(clip);
 
     // Drag the right edge to resize the sidebar.
     let handle = Rect::new(r.right() - 5.0, r.y, 5.0, r.h);
@@ -387,20 +419,33 @@ fn paint_thumbnails(ui: &mut Ui, c: &mut Chrome, body: Rect) {
     let total = doc.page_count();
     let current = doc.current_page();
     let rotation = doc.session.rotation;
-    let pad = 10.0;
-    let cell_w = (body.w - pad * 2.0 - Metrics::SCROLLBAR_W).max(60.0);
     let mut offset = c.sidebar.thumb_scroll;
     let mut clicked: Option<u32> = None;
-    let mut y = body.y + 8.0 - offset;
-    let mut content_h = 12.0;
-    for page in 0..total {
-        let size = doc
-            .info()
-            .map(|i| i.display_size(page, rotation))
-            .unwrap_or(Size::new(595.0, 842.0));
-        let thumb_h = (cell_w * size.h / size.w.max(1.0)).clamp(40.0, 400.0);
-        let cell = Rect::new(body.x + pad, y, cell_w, thumb_h);
-        content_h += thumb_h + 24.0;
+    let sizes: Vec<Size> = (0..total)
+        .map(|page| {
+            doc.info()
+                .map(|i| i.display_size(page, rotation))
+                .unwrap_or(Size::new(595.0, 842.0))
+        })
+        .collect();
+    let layout = crate::app::layout::thumbnail_cells(body, &sizes, offset);
+    let content_h = layout.content_h;
+    // Tell the app which pages are on screen so their thumbnails are rendered
+    // next, even when the reading position is far away.
+    let visible_range = layout
+        .cells
+        .iter()
+        .position(|cell| cell.bottom() > body.y && cell.y < body.bottom())
+        .unwrap_or(0) as u32;
+    let last = layout
+        .cells
+        .iter()
+        .rposition(|cell| cell.bottom() > body.y && cell.y < body.bottom())
+        .map(|index| index as u32 + 1)
+        .unwrap_or(visible_range);
+    let visible_range = (visible_range, last);
+    for (page, cell) in layout.cells.iter().copied().enumerate() {
+        let page = page as u32;
         if cell.bottom() > body.y && cell.y < body.bottom() {
             let selected = page == current;
             let id_cell = id(&format!("thumb-{}", page));
@@ -448,7 +493,6 @@ fn paint_thumbnails(ui: &mut Ui, c: &mut Chrome, body: Rect) {
                 &label,
             );
         }
-        y += thumb_h + 24.0;
     }
     let mut changed = widgets::scrollbar(
         ui,
@@ -466,6 +510,7 @@ fn paint_thumbnails(ui: &mut Ui, c: &mut Chrome, body: Rect) {
         offset = target.min((content_h - body.h).max(0.0));
         changed = true;
     }
+    c.sidebar.thumb_visible = Some(visible_range);
     if changed || offset != c.sidebar.thumb_scroll {
         c.sidebar.thumb_scroll = offset;
     }
@@ -617,14 +662,24 @@ fn paint_search(ui: &mut Ui, c: &mut Chrome, body: Rect) {
         c.actions.extend(local);
         return;
     }
-    let summary = if state.hits.is_empty() {
-        if state.no_more_pages {
-            "No matches".to_string()
+    let total_pages = current_doc(c).map(|d| d.page_count()).unwrap_or(0);
+    let summary = if state.no_more_pages {
+        if state.hits.is_empty() {
+            format!("No matches in {} page(s)", total_pages)
         } else {
-            "Searching…".to_string()
+            format!("{} match(es) · {} of {}", state.hits.len(), current + 1, state.hits.len())
         }
+    } else if state.hits.is_empty() {
+        format!("Searching… {}/{} pages", state.scanned, total_pages)
     } else {
-        format!("{} match(es) · {} of {}", state.hits.len(), current + 1, state.hits.len())
+        format!(
+            "{} match(es) · {} of {} · {}/{} pages",
+            state.hits.len(),
+            current + 1,
+            state.hits.len(),
+            state.scanned,
+            total_pages
+        )
     };
     ui.font.draw_text(
         ui.bmp,
@@ -1420,7 +1475,9 @@ fn paint_resume_dialog(ui: &mut Ui, d: &mut Dialogs, ctx: &DialogCtx, window: Re
         "Continue where you left off, or start from the first page?",
     );
     let remember = Rect::new(inner.x, inner.y + 52.0, inner.w, 26.0);
-    dlg.remember = widgets::checkbox(ui, id("resume-remember"), remember, "Remember my choice", dlg.remember);
+    if widgets::checkbox(ui, id("resume-remember"), remember, "Remember my choice", dlg.remember) {
+        dlg.remember = !dlg.remember;
+    }
     let resume = Rect::new(inner.x, inner.y + 96.0, (inner.w - 12.0) * 0.5, 34.0);
     let restart = Rect::new(resume.right() + 12.0, resume.y, resume.w, 34.0);
     if widgets::button(ui, id("resume-yes"), resume, "Resume", true, true) {

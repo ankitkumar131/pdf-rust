@@ -114,11 +114,23 @@ documentation.
 ## Resource embedding (`build.rs`)
 
 `build.rs` only acts when the target OS is Windows. It looks for
-`PDFRUST_RESOURCE_COMPILER`, then `windres` and `rc.exe` on `PATH`, compiles
+`PDFRUST_RESOURCE_COMPILER`, then `windres` and `rc.exe`. `rc.exe` is *not* on
+`PATH` outside a "Developer Command Prompt", so the script also searches
+`%WindowsSdkDir%\bin\<version>\<arch>`, `%ProgramFiles(x86)%\Windows Kits\10\bin\<version>\<arch>`
+(highest version wins) and, for the conversion step, `cvtres.exe` next to
+`link.exe`, in the Windows SDK or in `%VCToolsInstallDir%`. It compiles
 `packaging/windows/pdf-rust.rc` (icon + `VERSIONINFO` + manifest) and passes the
-object to the linker via `cargo:rustc-link-arg`. MSVC builds convert the `.res`
-with `cvtres`. Any failure is downgraded to a `cargo:warning` so a build without a
-resource compiler still produces a working executable.
+object to the linker via `cargo:rustc-link-arg`; MSVC builds convert the `.res`
+with `cvtres`. Success and failure are both reported as `cargo:warning=` lines so
+the CI log says which tool was used, and a build without a resource compiler still
+produces a working executable (just without the icon).
+
+Because the icon is what Windows shows in the taskbar, `packaging/windows/build.ps1`
+verifies the result: it fails the build when the `.exe` is not a GUI-subsystem
+binary (a console binary opens a terminal window whenever a PDF is opened) and
+warns when `VersionInfo.FileDescription` is empty, which means the resources were
+not embedded. At runtime the Win32 shell loads icon resource `1` for the window
+class and sets it with `WM_SETICON` for the title bar, taskbar and Alt-Tab.
 
 ## Publishing a release
 

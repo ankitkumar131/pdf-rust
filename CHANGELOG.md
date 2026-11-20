@@ -15,6 +15,41 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — reported defects (Windows and UI)
+- Pages no longer paint outside the reading area while scrolling: every panel is
+  clipped to its own rectangle, so a page can no longer appear over the toolbar,
+  the tab bar or the sidebar (and the toolbar buttons stay visible).
+- `pdf-rust.exe` no longer opens a console window: the binary is built for the
+  Windows GUI subsystem and re-attaches the parent console only when it is
+  launched from a terminal, so `--help`, `--selftest` and warnings still print.
+  Fatal startup errors that would otherwise be invisible show a message box.
+- The application icon is embedded by default on Windows: `build.rs` now finds
+  `rc.exe`/`cvtres.exe` in the standard Windows SDK and MSVC locations instead of
+  requiring a "Developer Command Prompt", and the window installs the embedded
+  icon for the title bar, taskbar and Alt-Tab.
+- The dark theme now darkens the window frame too (`DWMWA_USE_IMMERSIVE_DARK_MODE`,
+  caption and border colours where Windows supports them) and the class
+  background brush follows the theme, so resizing never flashes white.
+- The settings dialog works: the checkbox widget reported its *value* instead of
+  a click, so every checked option re-fired its action on every frame, unchecking
+  was impossible and the dark theme toggled itself. The same bug disabled
+  "Match case" in the search panel and "Remember my choice" in the resume dialog.
+- Search covers the whole document: it starts at the visible page and then scans
+  every other page (wrapping at the end) while accumulating matches, instead of
+  stopping at the first page that matched. The sidebar shows `n/total pages`
+  progress.
+- Closing a document no longer disturbs the others: the toolbar's close button
+  closes the open document (and only quits when none is open), the tab close
+  button keeps the same document selected when a tab to its left goes away, and
+  `Ctrl+W` still closes just the active document.
+- Thumbnails follow the reader: pages visible in the thumbnail strip are rendered
+  first (previously only pages near the reading position were requested, so
+  scrolling the strip left spinners), and rotating a document re-renders them in
+  the new orientation.
+- Wheel messages are translated from screen to client coordinates before hit
+  testing, and `WM_DPICHANGED` applies the suggested window rectangle instead of
+  leaving a mis-sized window after a monitor change.
+
 ### Added — Milestone 1: foundation
 - Cargo project with zero third-party dependencies and an optimised release
   profile (fat LTO, `codegen-units = 1`, `panic = "abort"`, stripped symbols).

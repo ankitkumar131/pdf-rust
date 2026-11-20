@@ -81,6 +81,14 @@ recorded in [`adr/`](adr).
 Nothing paints outside `App::paint`, which makes frames reproducible from a
 `ui::Input` sequence — that is how the headless viewer tests work.
 
+Each panel is *clipped* to its own rectangle (`Bitmap::push_clip`): the reading
+area, the sidebar body and the dialogs set a clip for the duration of their
+painting, and every primitive (`fill_rect`, `blit_scaled`, `blend`,
+`fill_rect_gradient`, …) intersects with it. Pages are laid out from the top of
+the scrollable document, so a page scrolled halfway off the viewport would
+otherwise be blitted over the toolbar and the sidebar — clipping is what keeps
+content inside the window box.
+
 ### Cost model
 
 Measured on a 1180×860 window with a 200-page document (`--selftest`,
@@ -182,3 +190,9 @@ GDI path is type checked too.
   go to new files.
 * Actions that can be triggered from more than one place (toolbar, key, menu,
   shell) are expressed once as `Action` and dispatched in one place.
+* Widgets report *interactions*, never state: `checkbox` returns `true` on the
+  frame it is clicked, and the caller owns the value. A widget that echoed its
+  value looked like a click to every `if widget(..) { action }` call site and
+  made the settings dialog re-fire its actions every frame.
+* A panel clip is always narrower than or equal to the surface: painting is
+  bounded by `Regions`, and the shells blit at most the client area.

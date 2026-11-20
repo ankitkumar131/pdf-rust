@@ -33,20 +33,24 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
 | 4 | SQLite persistence + restore | **done** | schema, migrations, autosave, recent list |
 | 5 | Thumbnails, TOC, search, recent | **done** | all sidebar panels, search navigation |
 | 6 | UI polish, themes, shortcuts, performance | **done** | 17.1 ms → 1.6 ms frames (ADR 0005) |
-| 7 | Windows installer, portable ZIP, associations | **done (unverified on Windows)** | NSIS + ZIP scripts; resource embedding untested here |
+| 7 | Windows installer, portable ZIP, associations | **done (unverified on Windows)** | NSIS + ZIP scripts; `build.ps1` now fails the build if the exe is not a GUI-subsystem binary and warns when the icon resource is missing |
 | 8 | Linux .deb / AppImage, MIME registration | **done** | `.deb` built and inspected in the sandbox |
 | 9 | Cross-platform testing, security review, release | in progress | see the checklists below |
 
 ## Verified so far
 
-* `cargo test` — 114 unit + 3 CLI + 10 PDF engine + 19 viewer tests, all green,
+* `cargo test` — 115 unit + 3 CLI + 10 PDF engine + 28 viewer tests, all green,
   run in parallel against real PDFium 152.0.7934. Zero compiler warnings.
 * `cargo check --features win32-syntax-check` type-checks the Win32 shell and its
   GDI printing path on Linux; a deliberately broken line proves the feature really
   compiles `src/platform/win32.rs`.
-* `--selftest` on a 200-page document (release, 1180×860): first frame 4.3 ms,
-  document→pixels 13.5 ms, steady frame 1.68 ms, page render 0.3 ms, cache 6.9 MB,
-  peak memory 17.8 MB. See `docs/testing.md` for the field descriptions.
+* `--selftest` on a 200-page document (release, 1180×860): first frame ~5 ms,
+  steady frame ~1.0 ms, peak memory ~8 MB. See `docs/testing.md` for the field
+  descriptions.
+* The panel clip, the widget contract, whole-document search, single-document
+  close, thumbnail navigation/paging and the Windows shell changes are covered by
+  headless tests (`tests/viewer.rs`, `src/ui/canvas.rs`); rendering a dark,
+  scrolled frame headlessly confirms the reading area stays inside its box.
 * `packaging/linux/build-deb.sh` produces a 3.3 MB `.deb` whose contents were
   checked with `dpkg-deb -I/-c`; `build-appimage.sh` produces a runnable AppDir
   (`dist/pdf-rust.AppDir/AppRun --version`).
@@ -88,7 +92,7 @@ each one is verified today:
 | Windows installer and portable distribution work | built by CI, **not hand-tested** | `.github/workflows/release.yml` builds `pdf-rust-0.1.0-setup.exe` and `pdf-rust-0.1.0-win64.zip` on `windows-latest` and attaches them to the release; installation itself needs a Windows machine (see limitations) |
 | Linux package works | met (packages built and inspected; install not performed here) | `.deb` built with `dpkg-deb`, AppDir runs in place (`AppRun --selftest`) |
 | Recognised as a PDF reader by both systems | met on Linux, scripted on Windows | `application/pdf` MIME + desktop entry + AppStream; Windows ProgID + `OpenWithProgids` + `Applications` entry |
-| Critical features have automated or documented manual tests | met | 146 automated tests plus the manual matrix in `docs/testing.md` |
+| Critical features have automated or documented manual tests | met | 158 automated tests plus the manual matrix in `docs/testing.md` |
 | Source pushed to the configured remote | met | fast-forward pushes to `origin` after every milestone |
 
 ## Known bugs / limitations

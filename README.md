@@ -63,7 +63,7 @@ Fetch the PDF engine (pinned, checksum-verified, git-ignored):
 
 ```bash
 cargo build --release                # target/release/pdf-rust
-cargo test                           # 146 tests, no display needed
+cargo test                           # 158 tests, no display needed
 ./target/release/pdf-rust document.pdf
 ```
 

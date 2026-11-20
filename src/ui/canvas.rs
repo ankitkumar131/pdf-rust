@@ -92,12 +92,49 @@ impl Color {
     }
 }
 
+/// Inclusive-exclusive integer bounds used for clipping (`x1`/`y1` are one past
+/// the last drawable pixel).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clip {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+
+impl Clip {
+    pub const EMPTY: Clip = Clip {
+        x0: 0,
+        y0: 0,
+        x1: 0,
+        y1: 0,
+    };
+
+    pub fn is_empty(&self) -> bool {
+        self.x1 <= self.x0 || self.y1 <= self.y0
+    }
+
+    /// Intersection of two clips.
+    pub fn intersect(self, other: Clip) -> Clip {
+        Clip {
+            x0: self.x0.max(other.x0),
+            y0: self.y0.max(other.y0),
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+        }
+    }
+}
+
 /// A 32-bit ARGB pixel buffer.
 pub struct Bitmap {
     pub width: u32,
     pub height: u32,
     /// Row-major pixels, `0xAARRGGBB`.
     pub px: Vec<u32>,
+    /// Drawing is clipped to this rectangle; the shells set it so a panel can
+    /// never paint over its neighbours (pages scrolled out of the reading area,
+    /// dialogs, popups).
+    clip: Clip,
 }
 
 impl Bitmap {
@@ -106,6 +143,7 @@ impl Bitmap {
             width,
             height,
             px: Vec::new(),
+            clip: Clip::EMPTY,
         };
         bmp.resize(width, height);
         bmp
@@ -123,6 +161,42 @@ impl Bitmap {
         self.height = height.max(1);
         self.px
             .resize((self.width as usize) * (self.height as usize), 0);
+        self.clip = self.full_clip();
+    }
+
+    /// The current clip rectangle.
+    pub fn clip(&self) -> Clip {
+        self.clip
+    }
+
+    /// Whole-surface clip rectangle.
+    pub fn full_clip(&self) -> Clip {
+        Clip {
+            x0: 0,
+            y0: 0,
+            x1: self.width as i32,
+            y1: self.height as i32,
+        }
+    }
+
+    /// Narrows the clip to `r` (a no-op when the result is empty) and returns
+    /// the previous clip so the caller can restore it.
+    pub fn push_clip(&mut self, r: Rect) -> Clip {
+        let previous = self.clip;
+        if !r.is_empty() {
+            let requested = Clip {
+                x0: r.x.floor() as i32,
+                y0: r.y.floor() as i32,
+                x1: r.right().ceil() as i32,
+                y1: r.bottom().ceil() as i32,
+            };
+            self.clip = previous.intersect(requested);
+        }
+        previous
+    }
+
+    pub fn pop_clip(&mut self, previous: Clip) {
+        self.clip = previous;
     }
 
     pub fn clear(&mut self, color: Color) {
@@ -142,9 +216,15 @@ impl Bitmap {
         Color(self.px[self.index(x, y)])
     }
 
+    /// True when the pixel is inside both the surface and the clip rectangle.
+    #[inline]
+    fn visible(&self, x: u32, y: u32) -> bool {
+        x >= self.clip.x0 as u32 && x < self.clip.x1 as u32 && y >= self.clip.y0 as u32 && y < self.clip.y1 as u32
+    }
+
     #[inline]
     pub fn set(&mut self, x: u32, y: u32, c: Color) {
-        if x >= self.width || y >= self.height {
+        if x >= self.width || y >= self.height || !self.visible(x, y) {
             return;
         }
         let i = self.index(x, y);
@@ -154,7 +234,7 @@ impl Bitmap {
     /// Source-over blends `c` onto the pixel at `(x, y)`.
     #[inline]
     pub fn blend(&mut self, x: u32, y: u32, c: Color) {
-        if x >= self.width || y >= self.height || c.a() == 0 {
+        if x >= self.width || y >= self.height || c.a() == 0 || !self.visible(x, y) {
             return;
         }
         let i = self.index(x, y);
@@ -168,7 +248,7 @@ impl Bitmap {
     /// Adds `coverage` (0..=1) of `c` to the pixel, used by text and AA shapes.
     #[inline]
     pub fn blend_coverage(&mut self, x: u32, y: u32, c: Color, coverage: f32) {
-        if x >= self.width || y >= self.height || coverage <= 0.0 {
+        if x >= self.width || y >= self.height || coverage <= 0.0 || !self.visible(x, y) {
             return;
         }
         let a = (c.a() as f32 * coverage.clamp(0.0, 1.0)).round() as u8;
@@ -178,14 +258,25 @@ impl Bitmap {
         self.blend(x, y, c.with_alpha(a));
     }
 
+    /// Pixel bounds of `r` clipped to the surface and the clip rectangle.
+    #[inline]
+    fn clip_rect_bounds(&self, r: Rect) -> (u32, u32, u32, u32) {
+        let x0 = r.x.floor().max(self.clip.x0 as f32).max(0.0) as u32;
+        let y0 = r.y.floor().max(self.clip.y0 as f32).max(0.0) as u32;
+        let x1 = (r.right().ceil() as u32)
+            .min(self.width)
+            .min(self.clip.x1.max(0) as u32);
+        let y1 = (r.bottom().ceil() as u32)
+            .min(self.height)
+            .min(self.clip.y1.max(0) as u32);
+        (x0, y0, x1, y1)
+    }
+
     pub fn fill_rect(&mut self, r: Rect, c: Color) {
         if c.a() == 0 {
             return;
         }
-        let x0 = r.x.floor().max(0.0) as u32;
-        let y0 = r.y.floor().max(0.0) as u32;
-        let x1 = (r.right().ceil().max(0.0) as u32).min(self.width);
-        let y1 = (r.bottom().ceil().max(0.0) as u32).min(self.height);
+        let (x0, y0, x1, y1) = self.clip_rect_bounds(r);
         if x0 >= x1 || y0 >= y1 {
             return;
         }
@@ -240,10 +331,12 @@ impl Bitmap {
             (r.right() - radius, r.bottom() - radius, 1.0, 1.0),
         ];
         for (cx, cy, sx, sy) in corners {
-            let x0 = (cx - radius).floor().max(0.0) as u32;
-            let x1 = ((cx + radius).ceil() as u32).min(self.width);
-            let y0 = (cy - radius).floor().max(0.0) as u32;
-            let y1 = ((cy + radius).ceil() as u32).min(self.height);
+            let (x0, y0, x1, y1) = self.clip_rect_bounds(Rect::new(
+                cx - radius,
+                cy - radius,
+                radius * 2.0,
+                radius * 2.0,
+            ));
             for y in y0..y1 {
                 for x in x0..x1 {
                     let px = x as f32 + 0.5;
@@ -322,10 +415,12 @@ impl Bitmap {
     }
 
     pub fn fill_circle(&mut self, cx: f32, cy: f32, radius: f32, c: Color) {
-        let x0 = (cx - radius).floor().max(0.0) as u32;
-        let x1 = ((cx + radius).ceil() as u32).min(self.width);
-        let y0 = (cy - radius).floor().max(0.0) as u32;
-        let y1 = ((cy + radius).ceil() as u32).min(self.height);
+        let (x0, y0, x1, y1) = self.clip_rect_bounds(Rect::new(
+            cx - radius,
+            cy - radius,
+            radius * 2.0,
+            radius * 2.0,
+        ));
         for y in y0..y1 {
             for x in x0..x1 {
                 let dx = x as f32 + 0.5 - cx;
@@ -363,10 +458,7 @@ impl Bitmap {
         if opacity <= 0.0 {
             return;
         }
-        let dx0 = dst.x.floor().max(0.0) as u32;
-        let dy0 = dst.y.floor().max(0.0) as u32;
-        let dx1 = (dst.right().ceil().max(0.0) as u32).min(self.width);
-        let dy1 = (dst.bottom().ceil().max(0.0) as u32).min(self.height);
+        let (dx0, dy0, dx1, dy1) = self.clip_rect_bounds(dst);
         if dx0 >= dx1 || dy0 >= dy1 {
             return;
         }
@@ -469,10 +561,7 @@ impl Bitmap {
         if r.is_empty() {
             return;
         }
-        let y0 = r.y.floor().max(0.0) as u32;
-        let y1 = (r.bottom().ceil().max(0.0) as u32).min(self.height);
-        let x0 = r.x.floor().max(0.0) as u32;
-        let x1 = (r.right().ceil().max(0.0) as u32).min(self.width);
+        let (x0, y0, x1, y1) = self.clip_rect_bounds(r);
         if x0 >= x1 || y0 >= y1 {
             return;
         }
@@ -530,6 +619,35 @@ mod tests {
         assert_eq!(b.get(3, 3), Color::rgb(9, 9, 9));
         // Out-of-range access never panics.
         b.fill_rect(Rect::new(100.0, 100.0, 10.0, 10.0), Color::rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn clip_bounds_every_primitive() {
+        let mut b = Bitmap::filled(32, 32, Color::rgb(0, 0, 0));
+        let saved = b.push_clip(Rect::new(8.0, 8.0, 16.0, 16.0));
+        // Fills, blits and circles outside the clip must not touch the surface.
+        b.fill_rect(Rect::new(0.0, 0.0, 32.0, 8.0), Color::rgb(255, 0, 0));
+        b.blit_scaled(
+            &Bitmap::filled(4, 4, Color::rgb(0, 255, 0)),
+            Rect::new(0.0, 20.0, 8.0, 8.0),
+            1.0,
+        );
+        b.fill_circle(30.0, 30.0, 3.0, Color::rgb(0, 0, 255));
+        assert_eq!(b.get(0, 0), Color::rgb(0, 0, 0));
+        assert_eq!(b.get(2, 22), Color::rgb(0, 0, 0));
+        assert_eq!(b.get(30, 30), Color::rgb(0, 0, 0));
+        // Inside the clip drawing still works, and a blit is cropped, not moved.
+        b.fill_rect(Rect::new(8.0, 8.0, 16.0, 16.0), Color::rgb(1, 1, 1));
+        b.blit_scaled(
+            &Bitmap::filled(8, 8, Color::rgb(9, 9, 9)),
+            Rect::new(4.0, 4.0, 8.0, 8.0),
+            1.0,
+        );
+        assert_eq!(b.get(9, 9), Color::rgb(9, 9, 9));
+        assert_eq!(b.get(6, 6), Color::rgb(0, 0, 0));
+        b.pop_clip(saved);
+        b.fill_rect(Rect::new(0.0, 26.0, 4.0, 4.0), Color::rgb(7, 7, 7));
+        assert_eq!(b.get(1, 27), Color::rgb(7, 7, 7));
     }
 
     #[test]

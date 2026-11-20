@@ -564,7 +564,8 @@ fn draw_clipped_text(ui: &mut Ui, x: f32, baseline: f32, text: &str, clip: Rect)
     }
 }
 
-/// Checkbox-style settings row. Returns the new value when toggled.
+/// Checkbox-style settings row. Returns true on the frame the box is clicked
+/// (the caller owns the value, so a checked box is not reported as a click).
 pub fn checkbox(ui: &mut Ui, id: Id, r: Rect, label: &str, value: bool) -> bool {
     let clicked = ui.interact(id, r, true);
     let theme = ui.theme;
@@ -598,11 +599,7 @@ pub fn checkbox(ui: &mut Ui, id: Id, r: Rect, label: &str, value: bool) -> bool 
         theme.text,
         &text,
     );
-    if clicked {
-        !value
-    } else {
-        value
-    }
+    clicked
 }
 
 /// Section heading used inside the sidebar and dialogs.

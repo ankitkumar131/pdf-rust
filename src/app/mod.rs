@@ -178,6 +178,9 @@ pub struct SidebarState {
     pub drag_width: bool,
     /// Page whose thumbnail should be scrolled into view.
     pub thumb_focus: u32,
+    /// Pages whose thumbnails are on screen (`start..end`), set by the painter so
+    /// the sidebar can render them first whatever the current page is.
+    pub thumb_visible: Option<(u32, u32)>,
 }
 
 /// Deferred actions produced by the UI layer (widgets never mutate app state
@@ -472,8 +475,16 @@ impl App {
         self.save_doc_session(index);
         let doc = self.docs.remove(index);
         self.engine.send(PdfCommand::Close { id: doc.id });
-        if self.active >= self.docs.len() && !self.docs.is_empty() {
+        // Keep the same document selected when a tab to the left goes away, and
+        // never point past the end of the list.
+        if index < self.active {
+            self.active -= 1;
+        } else if self.active >= self.docs.len() && !self.docs.is_empty() {
             self.active = self.docs.len() - 1;
+        }
+        // A closed document must not keep feeding highlights/search to the UI.
+        if self.docs.is_empty() {
+            self.active = 0;
         }
         self.redraw = true;
     }
@@ -571,19 +582,23 @@ impl App {
                         if token != self.docs[index].search.token {
                             continue;
                         }
-                        let found = self.docs[index].apply_search_hits(page, hits);
-                        if found {
-                            let doc = &mut self.docs[index];
-                            doc.search.active = true;
-                            doc.search.current = 0;
-                            if let Some(hit) = doc.search.hits.first().copied() {
-                                let count = doc.search.hits.len();
-                                Self::jump_to_hit(doc, hit, viewport);
-                                self.set_note(format!("{} match(es) so far", count));
+                        let progress = self.docs[index].apply_search_hits(page, hits);
+                        if let Some((before, after)) = progress {
+                            if before == 0 && after > 0 {
+                                // First match of this query: show it, then keep
+                                // collecting the matches on the other pages.
+                                let doc = &mut self.docs[index];
+                                doc.search.active = true;
+                                doc.search.current = 0;
+                                if let Some(hit) = doc.search.hits.first().copied() {
+                                    Self::jump_to_hit(doc, hit, viewport);
+                                }
                             }
-                        } else {
-                            // Keep scanning the following pages.
-                            self.search_continue(index, page, 1);
+                            if after > 0 {
+                                self.set_note(format!("{} match(es)", after));
+                            }
+                            // Search every page, not just the ones near the view.
+                            self.search_next_page(index, page);
                         }
                     }
                     self.redraw = true;
@@ -757,6 +772,28 @@ impl App {
         let _ = viewport;
     }
 
+    /// Where each page thumbnail is drawn in the sidebar.
+    ///
+    /// Shares its geometry with the painter, so a click can be mapped to a cell
+    /// in tests and in the shells without duplicating the layout.
+    pub fn thumbnail_cells(&self) -> crate::app::layout::ThumbCells {
+        let body = crate::app::layout::sidebar_body(self.regions().sidebar);
+        let Some(doc) = self.active_doc() else {
+            return crate::app::layout::ThumbCells {
+                cells: Vec::new(),
+                content_h: 0.0,
+            };
+        };
+        let sizes: Vec<crate::geom::Size> = (0..doc.page_count())
+            .map(|page| {
+                doc.info()
+                    .map(|i| i.display_size(page, doc.session.rotation))
+                    .unwrap_or(crate::geom::Size::new(595.0, 842.0))
+            })
+            .collect();
+        crate::app::layout::thumbnail_cells(body, &sizes, self.sidebar.thumb_scroll)
+    }
+
     /// Requests thumbnails for the pages around the current one (sidebar open).
     ///
     /// Thumbnails are rendered at the width they are displayed, so drawing them
@@ -767,6 +804,7 @@ impl App {
         }
         let regions = self.regions();
         let available = (regions.sidebar.w - 24.0 - Metrics::SCROLLBAR_W).max(64.0);
+        let visible = self.sidebar.thumb_visible;
         let mut requests = Vec::new();
         let Some(doc) = self.active_doc_mut() else {
             return;
@@ -793,9 +831,18 @@ impl App {
             doc.pending_thumbs.clear();
         }
         let scale = doc.thumb_scale_milli as f32 / 1000.0;
+        // The pages the user can actually see come first: scrolling the
+        // thumbnail strip must not leave the sidebar full of spinners.
+        let visible = visible.unwrap_or((current, current + 1));
+        let mut wanted: Vec<u32> = (visible.0.min(total)..visible.1.min(total)).collect();
         let from = current.saturating_sub(6);
         let to = (current + 12).min(total);
         for page in from..to {
+            if !wanted.contains(&page) {
+                wanted.push(page);
+            }
+        }
+        for page in wanted {
             if doc.thumbs.contains_key(&page) || doc.pending_thumbs.contains(&page) {
                 continue;
             }
@@ -869,6 +916,7 @@ impl App {
         }
         let page = doc.current_page();
         doc.search.scanning_page = Some(page);
+        doc.search.scanned = 0;
         let id = doc.id;
         let match_case = doc.search.match_case;
         self.engine.send(PdfCommand::Search {
@@ -882,35 +930,61 @@ impl App {
         });
     }
 
-    /// Requests the next page to scan for the active search.
-    fn search_continue(&mut self, index: usize, from_page: u32, dir: i32) {
+    /// Asks the worker for the matches of one page of the active search.
+    ///
+    /// Search runs over *every* page of the document: the page under the
+    /// viewport first (so typing gives immediate feedback), then the rest of the
+    /// document in order, wrapping around at the end.
+    fn search_page(&mut self, index: usize, page: u32) {
         let Some(doc) = self.docs.get_mut(index) else {
             return;
         };
         if !doc.search.active {
             return;
         }
-        let total = doc.page_count();
-        let next = from_page as i32 + dir;
-        if next < 0 || next >= total as i32 {
-            doc.search.no_more_pages = true;
-            doc.search.scanning_page = None;
-            return;
-        }
-        doc.search.scanning_page = Some(next as u32);
+        doc.search.scanning_page = Some(page);
         let token = doc.search.token;
         let query = doc.search.query.clone();
         let match_case = doc.search.match_case;
         let id = doc.id;
         self.engine.send(PdfCommand::Search {
             id,
-            page: next as u32,
+            page,
             query,
             token,
             start_index: -1,
-            backwards: dir < 0,
+            backwards: false,
             match_case,
         });
+    }
+
+    /// Queues the next page of the document for the active search.
+    fn search_next_page(&mut self, index: usize, after_page: u32) {
+        let Some(doc) = self.docs.get(index) else {
+            return;
+        };
+        if !doc.search.active {
+            return;
+        }
+        let total = doc.page_count();
+        if total == 0 || doc.search.scanned >= total {
+            if let Some(doc) = self.docs.get_mut(index) {
+                doc.search.no_more_pages = true;
+                doc.search.scanning_page = None;
+            }
+            let count = self.docs[index].search.hits.len();
+            if count == 0 {
+                self.set_note("No matches");
+            } else {
+                self.set_note(format!("{} match(es)", count));
+            }
+            self.redraw = true;
+            return;
+        }
+        // Walk the document once from the starting page, wrapping around.
+        let next = (after_page + 1) % total;
+        self.search_page(index, next);
+        self.redraw = true;
     }
 
     /// Moves to the next/previous match, continuing the search if needed.
@@ -923,8 +997,7 @@ impl App {
         }
         if doc.search.hits.is_empty() {
             if !doc.search.no_more_pages {
-                let page = doc.search.scanning_page.unwrap_or_else(|| doc.current_page());
-                self.search_continue(index, page, -1);
+                self.set_note("Searching…");
             } else {
                 self.set_note("No matches");
             }

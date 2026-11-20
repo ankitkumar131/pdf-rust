@@ -11,7 +11,7 @@ use pdf_rust::app::commands::Command;
 use pdf_rust::app::docview::DocState;
 use pdf_rust::app::{Action, App};
 use pdf_rust::db::{Database, ReadingMode, ZoomMode};
-use pdf_rust::geom::{Point, Size};
+use pdf_rust::geom::{Point, Rect, Size};
 use pdf_rust::pdf::Engine;
 use pdf_rust::ui::{Bitmap, Font, Input, Key, KeyEvent};
 
@@ -708,4 +708,404 @@ fn smooth_scrolling_eases_towards_the_target() {
     let after = app.active_doc().unwrap().scroll;
     assert!(!app.active_doc().unwrap().is_scrolling());
     assert!(after - before > 30.0, "an unsmoothed wheel step is ~60 px");
+}
+
+// ---------------------------------------------------------------- reported bugs
+
+fn click_at(app: &mut App, bmp: &mut Bitmap, f: &Font, at: Point) {
+    let mut down = input_none();
+    down.mouse = at;
+    down.down = true;
+    down.pressed = true;
+    app.frame(&down, bmp, f);
+    let mut up = input_none();
+    up.mouse = at;
+    up.down = false;
+    up.released = true;
+    app.frame(&up, bmp, f);
+}
+
+/// Settings dialog geometry, mirroring `chrome::paint_settings_dialog`.
+fn settings_rects(window: Rect) -> (Rect, Rect, Rect, [Rect; 3]) {
+    let frame = Rect::new(
+        window.x + (window.w - 560.0) * 0.5,
+        window.y + (window.h - 470.0) * 0.5,
+        560.0,
+        470.0,
+    );
+    let inner = Rect::new(frame.x + 20.0, frame.y + 54.0, frame.w - 40.0, frame.h - 70.0);
+    let dark = Rect::new(inner.x, inner.y + 20.0, inner.w, 26.0);
+    let smooth = Rect::new(inner.x, inner.y + 54.0, inner.w, 26.0);
+    let mut policies = [Rect::ZERO; 3];
+    let mut y = inner.y + 76.0 + 22.0;
+    for r in policies.iter_mut() {
+        *r = Rect::new(inner.x, y, inner.w, 26.0);
+        y += 30.0;
+    }
+    let done = Rect::new(frame.right() - 104.0, frame.bottom() - 44.0, 86.0, 32.0);
+    (dark, smooth, done, policies)
+}
+
+/// Every control in the Settings dialog must work and survive a restart.
+#[test]
+fn settings_dialog_changes_and_saves_preferences() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-settings");
+    let db_path = dir.join("library.db");
+    let font = font();
+    let mut bmp = Bitmap::new(1000, 800);
+    let window = Rect::new(0.0, 0.0, 1000.0, 800.0);
+    let (dark, smooth, done, policies) = settings_rects(window);
+
+    {
+        let mut app = app_with_db(&db_path);
+        app.window = Size::new(window.w, window.h);
+        app.dialogs.settings = true;
+        let was_dark = app.settings.dark;
+        let was_smooth = app.settings.smooth_scroll;
+
+        app.frame(&input_none(), &mut bmp, &font);
+        click_at(&mut app, &mut bmp, &font, dark.center());
+        eprintln!("DEBUG after dark: dark={} smooth={}", app.settings.dark, app.settings.smooth_scroll);
+        assert_eq!(app.settings.dark, !was_dark, "dark theme checkbox toggles the theme");
+        assert!(app.dialogs.settings, "the dialog stays open until Done");
+
+        app.frame(&input_none(), &mut bmp, &font);
+        eprintln!("DEBUG smooth rect {:?} settings {:?}", smooth, app.settings.smooth_scroll);
+        click_at(&mut app, &mut bmp, &font, smooth.center());
+        assert_eq!(
+            app.settings.smooth_scroll, !was_smooth,
+            "smooth scrolling checkbox toggles"
+        );
+
+        app.frame(&input_none(), &mut bmp, &font);
+        click_at(&mut app, &mut bmp, &font, policies[1].center());
+        assert_eq!(
+            app.settings.resume_policy,
+            pdf_rust::app::dialogs::ResumePolicy::Always,
+            "resume policy buttons select a policy"
+        );
+
+        app.frame(&input_none(), &mut bmp, &font);
+        click_at(&mut app, &mut bmp, &font, done.center());
+        assert!(!app.dialogs.settings, "Done closes the dialog");
+    }
+
+    let db = Database::open(&db_path).expect("database");
+    db.migrate().expect("migration");
+    let saved = pdf_rust::app::Settings::load(&db);
+    assert_eq!(saved.dark, !pdf_rust::app::Settings::default().dark, "theme persisted");
+    assert_eq!(
+        saved.resume_policy,
+        pdf_rust::app::dialogs::ResumePolicy::Always,
+        "resume policy persisted"
+    );
+}
+
+/// Closing one tab must leave the other documents open.
+#[test]
+fn closing_one_document_keeps_the_others_open() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-close");
+    let font = font();
+    let mut bmp = Bitmap::new(1000, 800);
+    let mut app = app_with_db(&dir.join("library.db"));
+    app.window = Size::new(1000.0, 800.0);
+    for name in ["a.pdf", "b.pdf", "c.pdf"] {
+        let pages: Vec<TestPage> = (0..3)
+            .map(|i| TestPage::a4(0).with_text(&[&format!("{} page {}", name, i + 1)]))
+            .collect();
+        let path = PdfBuilder::new(pages).write_to(&dir.join(name));
+        app.open_path(path, None);
+    }
+    assert!(pump(&mut app, &mut bmp, &font, |a| a.docs.iter().all(|d| d.is_ready())));
+    app.active = 1;
+    app.frame(&input_none(), &mut bmp, &font);
+
+    // The close button sits at the right edge of each tab.
+    let tabbar = app.regions().tabbar;
+    assert!(tabbar.h > 0.0, "two or more documents show a tab bar");
+    let title_w = font.text_width(&app.docs[0].title, pdf_rust::ui::Metrics::TEXT_SIZE) + 62.0;
+    let tab_w = title_w.clamp(96.0, 240.0);
+    let close = Point::new(6.0 + tab_w - 22.0 + 8.0, tabbar.y + 3.0 + (tabbar.h - 4.0) * 0.5);
+    click_at(&mut app, &mut bmp, &font, close);
+
+    assert_eq!(app.docs.len(), 2, "only the clicked document closes");
+    assert_eq!(app.docs[0].title, "b.pdf");
+    assert_eq!(app.docs[1].title, "c.pdf");
+    assert_eq!(app.active, 0, "the neighbour becomes active");
+}
+
+/// Clicking a thumbnail jumps to that page.
+#[test]
+fn clicking_a_thumbnail_navigates_to_the_page() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-thumbs");
+    let path = build_pdf(&dir, 12);
+    let font = font();
+    let mut bmp = Bitmap::new(1400, 900);
+    let mut app = app_with_db(&dir.join("library.db"));
+    app.window = Size::new(1400.0, 900.0);
+    app.show_sidebar = true;
+    app.sidebar.tab = pdf_rust::app::SidebarTab::Thumbnails;
+    app.open_path(path, None);
+    assert!(pump(&mut app, &mut bmp, &font, |a| a.docs.iter().all(|d| d.is_ready())));
+    app.frame(&input_none(), &mut bmp, &font);
+
+    let body = pdf_rust::app::layout::sidebar_body(app.regions().sidebar);
+    let cells = app.thumbnail_cells().cells;
+    assert!(cells.len() >= 6, "one cell per page");
+    let visible = cells
+        .iter()
+        .filter(|c| c.y + 20.0 < body.bottom())
+        .count();
+    assert!(visible >= 3, "thumbnails are listed for many pages, got {}", visible);
+    let target = cells[2];
+    click_at(
+        &mut app,
+        &mut bmp,
+        &font,
+        Point::new(target.center().x, target.y + 24.0),
+    );
+    assert_eq!(app.active_doc().unwrap().current_page(), 2, "thumbnail click navigates");
+}
+
+/// Search covers the whole document, not just the pages around the current one.
+#[test]
+fn search_scans_every_page_of_the_document() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-search");
+    let pages: Vec<TestPage> = (0..12)
+        .map(|i| {
+            let line = if i == 9 { "needle on a late page" } else { "filler text" };
+            TestPage::a4(0).with_text(&[line])
+        })
+        .collect();
+    let path = PdfBuilder::new(pages).write_to(&dir.join("search.pdf"));
+    let font = font();
+    let mut bmp = Bitmap::new(1000, 800);
+    let mut app = app_with_db(&dir.join("library.db"));
+    app.window = Size::new(1000.0, 800.0);
+    app.open_path(path, None);
+    assert!(pump(&mut app, &mut bmp, &font, |a| a.docs.iter().all(|d| d.is_ready())));
+
+    app.search_start("needle".to_string());
+    let found = pump(&mut app, &mut bmp, &font, |a| {
+        a.active_doc()
+            .map(|d| d.search.hits.iter().any(|h| h.page == 9))
+            .unwrap_or(false)
+    });
+    assert!(found, "the match on page 10 is found from page 1");
+}
+
+/// Scrolling must not paint pages over the toolbar or the sidebar.
+#[test]
+fn scrolled_pages_stay_inside_the_reading_area() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-clip");
+    let path = build_pdf(&dir, 6);
+    let font = font();
+    let mut bmp = Bitmap::new(1000, 800);
+    for dark in [false, true] {
+        let mut app = app_with_db(&dir.join("library.db"));
+        app.window = Size::new(1000.0, 800.0);
+        app.settings.dark = dark;
+        app.open_path(path.clone(), None);
+        assert!(pump(&mut app, &mut bmp, &font, |a| a.docs.iter().all(|d| d.is_ready())));
+        // Halfway through the second page: the page above it straddles the top
+        // edge of the reading area.
+        let scroll = app.regions().content.h * 1.5;
+        let viewport = app.regions().content.size();
+        if let Some(doc) = app.active_doc_mut() {
+            doc.jump_to(scroll);
+            doc.recompute_layout(viewport);
+        }
+        app.frame(&input_none(), &mut bmp, &font);
+        let content = app.regions().content;
+        // The two rows directly above the reading area belong to the toolbar and
+        // must stay uniform whatever the document scrolls to.
+        for dy in [1u32, 2] {
+            let y = content.y as u32 - dy;
+            let expected = bmp.get(content.x as u32 + 1, y);
+            for x in (content.x as u32 + 1)..(content.right() as u32 - 1) {
+                assert_eq!(
+                    bmp.get(x, y),
+                    expected,
+                    "dark={} page painted over the toolbar at ({}, {})",
+                    dark,
+                    x,
+                    y
+                );
+            }
+        }
+        // The reading area itself is unaffected: the page is still painted.
+        let mut page_pixels = 0;
+        for y in (content.y as u32 + 4)..(content.bottom() as u32 - 4) {
+            for x in (content.x as u32 + 4)..(content.right() as u32 - 12) {
+                if bmp.get(x, y) == pdf_rust::ui::canvas::Color::rgb(255, 255, 255) {
+                    page_pixels += 1;
+                }
+            }
+        }
+        assert!(page_pixels > 1000, "dark={} the page is still visible", dark);
+    }
+}
+
+/// Rotating a document must refresh its thumbnails (they are drawn rotated).
+#[test]
+fn rotating_redraws_thumbnails() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-thumb-rotate");
+    let path = build_pdf(&dir, 4);
+    let font = font();
+    let mut bmp = Bitmap::new(1200, 900);
+    let mut app = app_with_db(&dir.join("library.db"));
+    app.window = Size::new(1200.0, 900.0);
+    app.show_sidebar = true;
+    app.sidebar.tab = pdf_rust::app::SidebarTab::Thumbnails;
+    app.open_path(path, None);
+    assert!(pump(&mut app, &mut bmp, &font, |a| a
+        .active_doc()
+        .map(|d| d.thumbs.len() >= 2)
+        .unwrap_or(false)));
+    let before = app.active_doc().unwrap().thumbs.len();
+    assert!(before >= 2);
+    app.rotate(90);
+    assert!(
+        app.active_doc().unwrap().thumbs.is_empty(),
+        "rotating clears the stale thumbnails"
+    );
+    assert!(pump(&mut app, &mut bmp, &font, |a| a
+        .active_doc()
+        .map(|d| d.thumbs.len() >= 2)
+        .unwrap_or(false)));
+    // The thumbnail is now landscape: wider than tall for a portrait page.
+    let page = app.thumbnail_cells().cells[1];
+    let size = app.active_doc().unwrap().info().unwrap().display_size(0, 90);
+    assert!(
+        page.w > page.h && size.w > size.h,
+        "cells follow the rotated page size"
+    );
+}
+
+/// Thumbnails must render for the pages the user scrolled to, not just the ones
+/// around the reading position.
+#[test]
+fn thumbnails_load_for_the_visible_pages() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-thumb-scroll");
+    let path = build_pdf(&dir, 40);
+    let font = font();
+    let mut bmp = Bitmap::new(1200, 900);
+    let mut app = app_with_db(&dir.join("library.db"));
+    app.window = Size::new(1200.0, 900.0);
+    app.show_sidebar = true;
+    app.sidebar.tab = pdf_rust::app::SidebarTab::Thumbnails;
+    app.open_path(path, None);
+    assert!(pump(&mut app, &mut bmp, &font, |a| !a.active_doc().unwrap().thumbs.is_empty()));
+    // Scroll the thumbnail strip to the end of the document.
+    app.sidebar.thumb_focus = 0;
+    app.sidebar.thumb_scroll = 1_000_000.0;
+    assert!(pump(&mut app, &mut bmp, &font, |a| {
+        let visible = a.sidebar.thumb_visible.unwrap_or((0, 0));
+        visible.1 > 30
+            && (visible.0..visible.1).all(|page| a
+                .active_doc()
+                .map(|d| d.thumbs.get(&page).is_some())
+                .unwrap_or(false))
+    }));
+}
+
+/// The toolbar close button closes the document, never the whole application.
+#[test]
+fn toolbar_close_button_closes_only_the_document() {
+    if !common::pdfium_available() {
+        return;
+    }
+    let dir = TempDir::new("viewer-tb-close");
+    let font = font();
+    let mut bmp = Bitmap::new(1100, 800);
+    let mut app = app_with_db(&dir.join("library.db"));
+    app.window = Size::new(1100.0, 800.0);
+    for name in ["one.pdf", "two.pdf"] {
+        let pages: Vec<TestPage> = (0..2)
+            .map(|i| TestPage::a4(0).with_text(&[&format!("{} {}", name, i + 1)]))
+            .collect();
+        let path = PdfBuilder::new(pages).write_to(&dir.join(name));
+        app.open_path(path, None);
+    }
+    assert!(pump(&mut app, &mut bmp, &font, |a| a.docs.iter().all(|d| d.is_ready())));
+    app.active = 0;
+    app.frame(&input_none(), &mut bmp, &font);
+    // The toolbar's right-hand cluster is laid out from the right edge: search,
+    // print, full screen, presentation, theme, settings, info, close.
+    let regions = app.regions();
+    const BTN: f32 = 30.0;
+    const GAP: f32 = 4.0;
+    let close_slot_x = regions.toolbar.right() - 8.0 - BTN - 7.0 * (BTN + GAP);
+    let close = Point::new(close_slot_x + BTN * 0.5, regions.toolbar.center().y);
+    click_at(&mut app, &mut bmp, &font, close);
+    assert!(!app.quit, "closing a document does not quit the application");
+    assert_eq!(app.docs.len(), 1, "exactly one document closed");
+    assert_eq!(app.docs[0].title, "two.pdf");
+}
+
+
+/// The checkbox widget must report a *click*, not the value it was given: with
+/// the old contract every checked box fired its action on every frame, which made
+/// the settings dialog (and the search options) look broken.
+#[test]
+fn checkbox_reports_clicks_not_values() {
+    use pdf_rust::ui::widgets;
+    let font = font();
+    let mut bmp = Bitmap::new(200, 120);
+    let mut state = pdf_rust::ui::UiState::default();
+    let r = Rect::new(10.0, 10.0, 180.0, 24.0);
+    let key = pdf_rust::ui::id("test-checkbox");
+
+    // Hovering a checked box without pressing must not report a click.
+    let hover = Input {
+        mouse: r.center(),
+        ..Default::default()
+    };
+    let mut ui = pdf_rust::ui::Ui::new(&mut bmp, &font, pdf_rust::ui::Theme::light(), &hover, &mut state);
+    assert!(!widgets::checkbox(&mut ui, key, r, "Checked", true));
+    let idle = Input::default();
+    let mut ui = pdf_rust::ui::Ui::new(&mut bmp, &font, pdf_rust::ui::Theme::light(), &idle, &mut state);
+    assert!(!widgets::checkbox(&mut ui, key, r, "Checked", true));
+
+    // Press then release inside reports exactly one click, even when checked.
+    let press = Input {
+        mouse: r.center(),
+        down: true,
+        pressed: true,
+        ..Default::default()
+    };
+    let mut ui = pdf_rust::ui::Ui::new(&mut bmp, &font, pdf_rust::ui::Theme::light(), &press, &mut state);
+    assert!(!widgets::checkbox(&mut ui, key, r, "Checked", true), "press is not a click");
+    let release = Input {
+        mouse: r.center(),
+        down: false,
+        released: true,
+        ..Default::default()
+    };
+    let mut ui = pdf_rust::ui::Ui::new(&mut bmp, &font, pdf_rust::ui::Theme::light(), &release, &mut state);
+    assert!(widgets::checkbox(&mut ui, key, r, "Checked", true), "release reports the click");
+    // ... and a second release on the following frame is not another click.
+    let mut ui = pdf_rust::ui::Ui::new(&mut bmp, &font, pdf_rust::ui::Theme::light(), &idle, &mut state);
+    assert!(!widgets::checkbox(&mut ui, key, r, "Checked", true));
 }
