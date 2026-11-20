@@ -1,3 +1,216 @@
-fn main() {
-    println!("pdf-rust {} (GUI shell not wired up yet)", pdf_rust::APP_VERSION);
+//! `pdf-rust` — a fast, lightweight, native PDF reader.
+//!
+//! Usage:
+//! ```text
+//! pdf-rust [options] [document.pdf ...]
+//!
+//! Options:
+//!   -h, --help             Show this help
+//!   -V, --version          Print the version
+//!       --db <path>        Use a specific library database
+//!       --no-db            Do not read or write the library database
+//!       --page <n>         Open the first document at page n
+//!       --stats            Print startup/memory statistics at exit
+//! ```
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::time::Instant;
+
+use pdf_rust::app::App;
+use pdf_rust::db::{default_database_path, Database};
+use pdf_rust::pdf::Engine;
+use pdf_rust::ui::Font;
+
+const USAGE: &str = "\
+pdf-rust — a fast, lightweight, native PDF reader
+
+Usage: pdf-rust [options] [document.pdf ...]
+
+Options:
+  -h, --help             Show this help
+  -V, --version          Print the version
+      --db <path>        Use a specific library database
+      --no-db            Do not read or write the library database
+      --page <n>         Open the first document at page n
+      --stats            Print startup/memory statistics at exit
+";
+
+struct Options {
+    db: Option<PathBuf>,
+    no_db: bool,
+    page: Option<u32>,
+    stats: bool,
+    docs: Vec<PathBuf>,
+}
+
+fn parse_args(args: &[String]) -> Result<Option<Options>, String> {
+    let mut options = Options {
+        db: None,
+        no_db: false,
+        page: None,
+        stats: false,
+        docs: Vec::new(),
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        match arg {
+            "-h" | "--help" => {
+                print!("{}", USAGE);
+                return Ok(None);
+            }
+            "-V" | "--version" => {
+                println!("{} {}", pdf_rust::APP_NAME, pdf_rust::APP_VERSION);
+                return Ok(None);
+            }
+            "--no-db" => options.no_db = true,
+            "--stats" => options.stats = true,
+            "--db" => {
+                i += 1;
+                let value = args.get(i).ok_or("--db needs a path")?;
+                options.db = Some(PathBuf::from(value));
+            }
+            "--page" => {
+                i += 1;
+                let value = args.get(i).ok_or("--page needs a number")?;
+                options.page = Some(value.parse().map_err(|_| format!("invalid page: {}", value))?);
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown option: {}", other));
+            }
+            other => options.docs.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    Ok(Some(options))
+}
+
+fn open_database(options: &Options) -> (Option<Database>, Option<String>) {
+    if options.no_db {
+        return (None, None);
+    }
+    let path = options
+        .db
+        .clone()
+        .or_else(default_database_path)
+        .unwrap_or_else(|| PathBuf::from("library.db"));
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                return (
+                    None,
+                    Some(format!("could not create {}: {}", dir.display(), e)),
+                );
+            }
+        }
+    }
+    match Database::open(&path) {
+        Ok(db) => {
+            if let Err(e) = db.migrate() {
+                return (Some(db), Some(format!("schema migration failed: {}", e)));
+            }
+            (Some(db), None)
+        }
+        Err(e) => (None, Some(format!("{} ({})", e, path.display()))),
+    }
+}
+
+fn run(options: Options) -> Result<(), String> {
+    let started = Instant::now();
+    let engine = Engine::start();
+    if let Some(err) = &engine.init_error {
+        eprintln!("pdf-rust: warning: {}", err);
+    }
+    let (db, db_error) = open_database(&options);
+    if let Some(err) = &db_error {
+        eprintln!("pdf-rust: warning: reading history is unavailable: {}", err);
+    }
+    let mut app = App::new(engine, db, db_error);
+    for doc in &options.docs {
+        app.open_path(doc.clone(), None);
+        if app.dialogs.error.is_some() {
+            // Keep going: other documents may still open. The error is shown in
+            // the window, which is friendlier than exiting with a message.
+        }
+    }
+    if let Some(page) = options.page {
+        app.pending_initial_page = Some(page);
+    }
+    let startup_ms = started.elapsed().as_secs_f32() * 1000.0;
+    if std::env::var("PDFRUST_STATS").is_ok() {
+        eprintln!("pdf-rust: startup {:.1} ms", startup_ms);
+    }
+    let font = Font::ui();
+
+    #[cfg(target_os = "linux")]
+    {
+        pdf_rust::platform::x11::run(app, font)?;
+    }
+    #[cfg(windows)]
+    {
+        pdf_rust::platform::win32::run(app, font)?;
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = (app, font);
+        return Err("this build has no window system shell".to_string());
+    }
+
+    if options.stats || std::env::var("PDFRUST_STATS").is_ok() {
+        let rss = pdf_rust::util::stats::peak_rss_bytes();
+        eprintln!(
+            "pdf-rust: startup {:.1} ms, peak memory {:.1} MB",
+            startup_ms,
+            rss as f64 / (1024.0 * 1024.0)
+        );
+    }
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match parse_args(&args).and_then(|options| match options {
+        Some(options) => run(options),
+        None => Ok(()),
+    }) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("pdf-rust: {}", message);
+            eprintln!("Try `pdf-rust --help`.");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_flags_and_paths() {
+        let options = parse_args(&args(&["--page", "12", "--no-db", "a.pdf", "b.pdf"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(options.page, Some(12));
+        assert!(options.no_db);
+        assert_eq!(options.docs.len(), 2);
+    }
+
+    #[test]
+    fn rejects_unknown_flags() {
+        assert!(parse_args(&args(&["--wat"])).is_err());
+        assert!(parse_args(&args(&["--page", "abc"])).is_err());
+        assert!(parse_args(&args(&["--db"])).is_err());
+    }
+
+    #[test]
+    fn help_short_circuits() {
+        assert!(parse_args(&args(&["--help"])).unwrap().is_none());
+        assert!(parse_args(&args(&["-V"])).unwrap().is_none());
+    }
 }

@@ -29,6 +29,16 @@ impl Color {
         Color(0xFF00_0000 | (v & 0x00FF_FFFF))
     }
 
+    /// Colour from a packed `0xAARRGGBB` value (used by persisted highlights).
+    pub const fn from_argb(v: u32) -> Color {
+        Color(v)
+    }
+
+    /// Packed `0xAARRGGBB` value.
+    pub const fn argb(self) -> u32 {
+        self.0
+    }
+
     pub fn a(self) -> u8 {
         (self.0 >> 24) as u8
     }

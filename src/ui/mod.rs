@@ -6,6 +6,7 @@
 //! visual code shared between Windows and Linux (and testable headlessly).
 
 pub mod canvas;
+pub mod chrome;
 pub mod font;
 pub mod icons;
 pub mod theme;

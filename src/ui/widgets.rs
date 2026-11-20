@@ -395,6 +395,25 @@ pub fn text_field(
     }
     let focused = ui.state.focus == Some(id);
     if focused {
+        // Typed characters and pastes are applied first so that a frame which
+        // also carries Enter (fast typing) submits the updated text.
+        if let Some(paste) = ui.input.paste.clone() {
+            let cleaned: String = paste.chars().filter(|c| !c.is_control()).collect();
+            if !cleaned.is_empty() {
+                state.insert(&cleaned);
+                resp.changed = true;
+            }
+        }
+        let typed: String = ui
+            .input
+            .text
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        if !typed.is_empty() && !ui.input.ctrl && !ui.input.alt {
+            state.insert(&typed);
+            resp.changed = true;
+        }
         for ev in ui.input.keys.clone() {
             match ev.key {
                 super::Key::Enter => resp.submitted = true,
@@ -446,23 +465,6 @@ pub fn text_field(
                 }
                 _ => {}
             }
-        }
-        if let Some(paste) = ui.input.paste.clone() {
-            let cleaned: String = paste.chars().filter(|c| !c.is_control()).collect();
-            if !cleaned.is_empty() {
-                state.insert(&cleaned);
-                resp.changed = true;
-            }
-        }
-        let typed: String = ui
-            .input
-            .text
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
-        if !typed.is_empty() && !ui.input.ctrl && !ui.input.alt {
-            state.insert(&typed);
-            resp.changed = true;
         }
     }
 

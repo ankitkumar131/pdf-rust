@@ -2,3 +2,4 @@
 
 pub mod hash;
 pub mod png;
+pub mod stats;
