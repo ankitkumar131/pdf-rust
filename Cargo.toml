@@ -1,0 +1,40 @@
+[package]
+name = "pdf-rust"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Fast, lightweight, native PDF reader for Windows and Linux"
+license = "MIT"
+repository = "https://github.com/ankitkumar131/pdf-rust"
+keywords = ["pdf", "reader", "viewer", "desktop"]
+categories = ["gui", "multimedia"]
+
+# The whole application deliberately depends on the Rust standard library only.
+# See docs/adr/0001-architecture.md for the rationale (binary size, RAM usage,
+# auditability, offline/reproducible builds).
+[dependencies]
+
+[lib]
+name = "pdf_rust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pdf-rust"
+path = "src/main.rs"
+
+# Release profile tuned for startup time, size and memory (see instruction doc):
+# fat LTO + single codegen unit gives the smallest, fastest binary; `panic=abort`
+# removes unwinding tables; `strip` drops symbols.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Tests are run with the dev profile; keep them fast to compile but usable.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

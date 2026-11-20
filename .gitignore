@@ -1,0 +1,35 @@
+# Build artefacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Locally fetched third-party runtimes (pdfium binaries, sqlite fallbacks).
+# Fetch with scripts/fetch-pdfium.sh - never commit multi-megabyte binaries.
+/runtime/pdfium/
+/runtime/sqlite/
+
+# Packaged output
+/dist/
+*.deb
+*.AppImage
+*.exe
+*.msi
+*.zip
+*.tar.gz
+
+# Local databases / user data that must never be committed
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Sample documents used only for local manual testing
+/samples/*.pdf
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
