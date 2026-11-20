@@ -370,7 +370,6 @@ declare_xlib! {
     fn XSetWMProtocols(dpy: *mut Display, window: Window, protocols: *mut Atom, count: c_int) -> c_int;
     fn XSetWMNormalHints(dpy: *mut Display, window: Window, hints: *mut XSizeHints) -> ();
     fn XSetClassHint(dpy: *mut Display, window: Window, hint: *mut XClassHint) -> c_int;
-    fn XResizeWindow(dpy: *mut Display, window: Window, width: c_uint, height: c_uint) -> c_int;
     fn XFlush(dpy: *mut Display) -> c_int;
     fn XSync(dpy: *mut Display, discard: c_int) -> c_int;
     fn XPending(dpy: *mut Display) -> c_int;
@@ -402,7 +401,6 @@ declare_xlib! {
         width: c_uint,
         height: c_uint,
     ) -> c_int;
-    fn XLookupKeysym(event: *mut XKeyEvent, index: c_int) -> c_ulong;
     fn XLookupString(
         event: *mut XKeyEvent,
         buffer: *mut c_char,
@@ -411,7 +409,6 @@ declare_xlib! {
         status: *mut c_void,
     ) -> c_int;
     fn XSetSelectionOwner(dpy: *mut Display, selection: Atom, owner: Window, time: c_ulong) -> c_int;
-    fn XGetSelectionOwner(dpy: *mut Display, selection: Atom) -> Window;
     fn XConvertSelection(
         dpy: *mut Display,
         selection: Atom,
@@ -437,7 +434,6 @@ declare_xlib! {
     ) -> c_int;
     fn XFree(data: *mut c_void) -> c_int;
     fn XSetErrorHandler(handler: extern "C" fn(*mut Display, *mut c_void) -> c_int) -> *mut c_void;
-    fn XSetInputFocus(dpy: *mut Display, window: Window, revert_to: c_int, time: c_ulong) -> c_int;
 }
 
 #[repr(C)]

@@ -290,7 +290,7 @@ impl Bitmap {
         let x_end = (x1).min((r.right() - outer).max(x0 as f32) as u32);
         for y in y0..y1 {
             let in_vertical_band = y < y0 + band || y + band >= y1;
-            let mut span = |bmp: &mut Self, from: u32, to: u32| {
+            let span = |bmp: &mut Self, from: u32, to: u32| {
                 for x in from..to {
                     let px = x as f32 + 0.5;
                     let py = y as f32 + 0.5;

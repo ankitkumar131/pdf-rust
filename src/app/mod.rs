@@ -1237,7 +1237,6 @@ impl App {
             vec![(doc.current_page(), doc.session.rotation)]
         };
         let id = doc.id;
-        drop(doc);
         let token = self.take_token();
         self.engine.send(PdfCommand::ExportRotated {
             id,

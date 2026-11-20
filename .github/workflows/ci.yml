@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux (test, selftest, deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: linux-${{ hashFiles('Cargo.lock') }}
+
+      - name: Fetch PDFium
+        run: ./scripts/fetch-pdfium.sh linux-x64
+
+      - name: Build (warnings are errors for the library)
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo build --offline --release
+
+      - name: Test
+        run: cargo test --offline --release
+
+      - name: Type-check the Win32 shell
+        run: cargo check --offline --features win32-syntax-check
+
+      - name: Headless smoke test
+        run: |
+          cargo test --offline --release --test gen_fixtures -- --ignored --nocapture
+          ./target/release/pdf-rust --selftest --no-db "$RUNNER_TEMP/pdf-rust-bench/benchmark-200.pdf" | tee selftest.txt
+
+      - name: Package (.deb)
+        run: ./packaging/linux/build-deb.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-rust-linux
+          path: |
+            dist/*.deb
+            selftest.txt
+
+  windows:
+    name: Windows (build, zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: windows-${{ hashFiles('Cargo.lock') }}
+
+      - name: Fetch PDFium
+        shell: bash
+        run: ./scripts/fetch-pdfium.sh win-x64
+
+      - name: Tests
+        run: cargo test --offline --release
+
+      - name: Package (portable ZIP)
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -SkipTests -PdfiumDll runtime/pdfium/pdfium.dll
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-rust-windows
+          path: dist/pdf-rust-*-win64.zip

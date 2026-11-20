@@ -30,6 +30,7 @@ pub type FPDF_ANNOTATION = *mut c_void;
 pub const FPDF_PAGEOBJ_UNKNOWN: c_int = 0;
 
 /// `FPDF_BITMAP_FORMAT_BGRA`
+#[allow(non_upper_case_globals)]
 pub const FPDFBitmap_BGRA: c_int = 4;
 
 // Render flags (fpdf_render.h).
@@ -81,7 +82,9 @@ pub struct FPDF_FILEWRITE {
 
 macro_rules! declare_api {
     ($( fn $name:ident ( $($arg:ident : $ty:ty),* $(,)? ) -> $ret:ty ; )*) => {
-        /// Resolved PDFium entry points.
+        /// Resolved PDFium entry points. Field names mirror the exported C
+        /// symbols so they can be looked up verbatim.
+        #[allow(non_snake_case)]
         pub struct Api {
             $( pub $name: unsafe extern "C" fn($($ty),*) -> $ret, )*
         }
@@ -355,6 +358,8 @@ pub fn search_paths() -> Vec<PathBuf> {
                 out.push(dir.join(name));
                 out.push(dir.join("runtime").join("pdfium").join(name));
                 out.push(dir.join("lib").join(name));
+                // Packaged layout: /usr/bin/pdf-rust + /usr/lib/pdf-rust/libpdfium.so
+                out.push(dir.join("..").join("lib").join("pdf-rust").join(name));
             }
         }
     }
@@ -370,6 +375,7 @@ pub fn search_paths() -> Vec<PathBuf> {
         }
     } else {
         for name in file_names {
+            out.push(PathBuf::from("/usr/lib/pdf-rust").join(name));
             out.push(PathBuf::from("/usr/lib").join(name));
             out.push(PathBuf::from("/usr/lib/x86_64-linux-gnu").join(name));
             out.push(PathBuf::from("/usr/local/lib").join(name));

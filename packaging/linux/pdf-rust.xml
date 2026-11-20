@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/pdf">
+    <comment>PDF document</comment>
+    <comment xml:lang="en">PDF document</comment>
+    <glob pattern="*.pdf"/>
+    <icon name="pdf-rust"/>
+    <generic-icon name="x-office-document"/>
+  </mime-type>
+</mime-info>

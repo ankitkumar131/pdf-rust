@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.pdfrust.viewer</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>pdf-rust</name>
+  <summary>Fast, native PDF viewer</summary>
+  <description>
+    <p>
+      pdf-rust is a small, dependency-free PDF viewer. It renders pages with
+      PDFium on a background worker, keeps already-rendered pages in a byte
+      bounded cache and remembers what you were reading.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Single-page and continuous scrolling views with zoom presets</li>
+      <li>Rotate pages, page thumbnails, document outline and full-text search</li>
+      <li>Text selection and copy, find-as-you-type highlighting</li>
+      <li>Full-screen presentation mode with page transitions</li>
+      <li>Printing through the platform print dialog, encrypted PDF support</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">pdf-rust.desktop</launchable>
+  <url type="homepage">https://github.com/ankitkumar131/pdf-rust</url>
+  <url type="bugtracker">https://github.com/ankitkumar131/pdf-rust/issues</url>
+  <releases>
+    <release version="0.1.0" date="2026-11-20">
+      <description><p>First public release.</p></description>
+    </release>
+  </releases>
+  <provides>
+    <binary>pdf-rust</binary>
+    <mediatype>application/pdf</mediatype>
+  </provides>
+  <categories>
+    <category>Office</category>
+    <category>Viewer</category>
+    <category>Graphics</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

@@ -133,7 +133,7 @@ fn selftest(options: &Options) -> Result<(), String> {
     app.window = pdf_rust::geom::Size::new(1180.0, 860.0);
     let font = Font::ui();
     let mut bmp = Bitmap::new(1180, 860);
-    let mut input = Input::default();
+    let input = Input::default();
 
     // Warm the UI up with one frame of the empty window.
     app.frame(&input, &mut bmp, &font);

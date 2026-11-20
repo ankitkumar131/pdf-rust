@@ -53,7 +53,6 @@ declare_api! {
     fn sqlite3_close_v2(db: Handle) -> c_int;
     fn sqlite3_errmsg(db: Handle) -> *const c_char;
     fn sqlite3_exec(db: Handle, sql: *const c_char, cb: *mut c_void, arg: *mut c_void, err: *mut *mut c_char) -> c_int;
-    fn sqlite3_free(ptr: *mut c_void) -> ();
     fn sqlite3_prepare_v2(db: Handle, sql: *const c_char, n: c_int, stmt: *mut RawStmt, tail: *mut *const c_char) -> c_int;
     fn sqlite3_step(stmt: RawStmt) -> c_int;
     fn sqlite3_finalize(stmt: RawStmt) -> c_int;
@@ -70,7 +69,6 @@ declare_api! {
     fn sqlite3_column_type(stmt: RawStmt, col: c_int) -> c_int;
     fn sqlite3_last_insert_rowid(db: Handle) -> i64;
     fn sqlite3_changes(db: Handle) -> c_int;
-    fn sqlite3_busy_timeout(db: Handle, ms: c_int) -> c_int;
 }
 
 const SQLITE_NULL: c_int = 5;

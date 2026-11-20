@@ -317,6 +317,7 @@ pub enum Event {
 
 struct OpenDoc {
     doc: FPDF_DOCUMENT,
+    #[allow(dead_code)]
     info: Arc<DocInfo>,
     text_cache: HashMap<u32, Arc<PageText>>,
     text_order: Vec<u32>,
@@ -736,16 +737,6 @@ impl Worker {
         ffi::wide_string_from_len_query(|buf, len| unsafe {
             (self.api.FPDF_GetPageLabel)(doc, index, buf, len)
         })
-    }
-
-    fn page_dimensions(&self, doc: FPDF_DOCUMENT, page: u32) -> (f32, f32) {
-        let mut size = ffi::FS_SIZEF::default();
-        let ok = unsafe { (self.api.FPDF_GetPageSizeByIndexF)(doc, page as i32, &mut size) };
-        if ok != 0 && size.width > 0.0 && size.height > 0.0 {
-            (size.width, size.height)
-        } else {
-            (612.0, 792.0)
-        }
     }
 
     fn render(&self, doc: FPDF_DOCUMENT, key: RenderKey) -> Result<Bitmap, String> {

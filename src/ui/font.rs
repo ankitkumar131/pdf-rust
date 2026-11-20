@@ -70,9 +70,6 @@ struct Pt {
 /// Parsed, immutable font tables.
 pub struct Face {
     data: &'static [u8],
-    head: usize,
-    maxp: usize,
-    hhea: usize,
     hmtx: usize,
     cmap: Option<(usize, u16)>,
     loca: usize,
@@ -175,9 +172,6 @@ impl Face {
 
         Ok(Face {
             data,
-            head,
-            maxp,
-            hhea,
             hmtx,
             cmap: best,
             loca,

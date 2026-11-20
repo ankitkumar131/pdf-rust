@@ -134,7 +134,6 @@ pub struct UiState {
     pub hot: Option<Id>,
     pub active: Option<Id>,
     pub focus: Option<Id>,
-    hover_since: Option<(Id, f64)>,
     drag: Option<DragState>,
     /// Set while a modal dialog is open; suppresses interaction underneath.
     pub modal: bool,

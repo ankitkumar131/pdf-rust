@@ -1,0 +1,39 @@
+// Windows resources for pdf-rust: application icon and version stamp.
+// Compiled by build.rs with windres (GNU) or rc.exe (MSVC).
+
+#include <windows.h>
+
+1 ICON "pdf-rust.ico"
+
+1 VERSIONINFO
+ FILEVERSION 0,1,0,0
+ PRODUCTVERSION 0,1,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "pdf-rust contributors\0"
+            VALUE "FileDescription", "pdf-rust PDF viewer\0"
+            VALUE "FileVersion", "0.1.0.0\0"
+            VALUE "InternalName", "pdf-rust\0"
+            VALUE "LegalCopyright", "MIT licensed\0"
+            VALUE "OriginalFilename", "pdf-rust.exe\0"
+            VALUE "ProductName", "pdf-rust\0"
+            VALUE "ProductVersion", "0.1.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+
+// Manifest selection. The manifest file is next to the executable under
+// `pdf-rust.exe.manifest`, or embedded with RT_MANIFEST when packaged.
+1 RT_MANIFEST "pdf-rust.exe.manifest"

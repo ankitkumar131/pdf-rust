@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=pdf-rust
+GenericName=PDF Viewer
+Comment=Fast, native PDF reader written in Rust
+Exec=pdf-rust %F
+TryExec=pdf-rust
+Icon=pdf-rust
+Terminal=false
+Categories=Office;Viewer;Graphics;
+MimeType=application/pdf;
+Keywords=pdf;viewer;reader;document;
+StartupNotify=true
+StartupWMClass=pdf-rust

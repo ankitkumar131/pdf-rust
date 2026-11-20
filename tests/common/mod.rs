@@ -85,7 +85,7 @@ impl PdfBuilder {
             .map(|(user, owner)| crypto::StandardSecurity::new(user, owner));
         let mut objects: Vec<Vec<u8>> = Vec::new();
         // Object numbers are assigned in push order, starting at 1.
-        let mut push = |objects: &mut Vec<Vec<u8>>, body: Vec<u8>| -> usize {
+        let push = |objects: &mut Vec<Vec<u8>>, body: Vec<u8>| -> usize {
             objects.push(body);
             objects.len()
         };
