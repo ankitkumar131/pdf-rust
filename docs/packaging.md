@@ -6,31 +6,19 @@ generated. The rationale is in [ADR 0006](adr/0006-packaging.md).
 
 ## Artifacts
 
+Every release attaches these, built by `.github/workflows/release.yml` on GitHub
+runners (Linux job: `.deb`, portable tarball, AppImage; Windows job: portable ZIP,
+NSIS installer):
+
 | Platform | Artifact | Built by | Contents |
 | --- | --- | --- | --- |
-| Linux | `dist/pdf-rust_<version>_amd64.deb` | `packaging/linux/build-deb.sh` | `/usr/bin/pdf-rust`, `/usr/lib/pdf-rust/libpdfium.so`, desktop entry, MIME+AppStream metadata, icon, docs, `postinst`/`postrm` hooks |
-| Linux | `dist/pdf-rust-<version>-linux-x86_64.tar.gz` | `packaging/linux/build-portable.sh` | portable directory: executable, `libpdfium.so`, docs, `install-desktop.sh` |
-| Linux | `dist/pdf-rust-<version>-x86_64.AppImage` | `packaging/linux/build-appimage.sh` | AppDir with `AppRun` (sets `LD_LIBRARY_PATH`), same binary and library; needs `appimagetool` to finish the image |
-| Windows | `dist/pdf-rust-<version>-win64.zip` | `packaging/windows/build.ps1` | `pdf-rust.exe`, `pdfium.dll`, `README.md`, `CHANGELOG.md`, `LICENSE`, `pdf-rust.exe.manifest` |
-| Windows | `dist/pdf-rust-<version>-setup.exe` | `packaging/windows/build.ps1` + NSIS | installer with shortcuts, uninstaller and optional `.pdf` association |
-| any | `dist/pdf-rust-<version>-src.tar.gz` | `scripts/build-release.sh` (`git archive`) | source of the tagged commit |
-| any | `dist/SHA256SUMS.txt` | `scripts/build-release.sh` | checksums of the other artifacts |
-
-### Sizes (Linux x86-64, release build, PDFium 152.0.7934)
-
-| Item | Size |
-| --- | --- |
-| `pdf-rust` executable (stripped, fat LTO) | 1.71 MB |
-| `libpdfium.so` | 7.62 MB |
-| `.deb` download | 3.3 MB |
-| portable `.tar.gz` | 4.2 MB |
-| `.deb` installed (`dpkg-deb -I` *Installed-Size*) | 9.1 MB |
-| AppDir (uncompressed, before squashfs) | 9.3 MB |
-
-The Windows artifacts are not measured here (no Windows machine in the sandbox);
-expect a similar split — ~1.7 MB executable plus ~8 MB `pdfium.dll`, and a
-portable ZIP of roughly 4 MB thanks to `lzma` in the installer and deflate in the
-ZIP.
+| Windows | `pdf-rust-<version>-win64.zip` | `packaging/windows/build.ps1` | `pdf-rust.exe`, `pdfium.dll`, docs, `pdf-rust.exe.manifest` |
+| Windows | `pdf-rust-<version>-setup.exe` | `build.ps1` + `installer.nsi` | installer with shortcuts, uninstaller, optional `.pdf` association |
+| Linux | `pdf-rust_<version>_amd64.deb` | `packaging/linux/build-deb.sh` | `/usr/bin/pdf-rust`, `/usr/lib/pdf-rust/libpdfium.so`, desktop entry, MIME+AppStream metadata, icon, docs, `postinst`/`postrm` |
+| Linux | `pdf-rust-<version>-x86_64.AppImage` | `packaging/linux/build-appimage.sh` + `appimagetool` | single file, `AppRun` sets `LD_LIBRARY_PATH` to the bundled PDFium |
+| Linux | `pdf-rust-<version>-linux-x86_64.tar.gz` | `packaging/linux/build-portable.sh` | portable directory: executable, `libpdfium.so`, docs, `install-desktop.sh` |
+| any | `pdf-rust-<version>-src.tar.gz` | `git archive` | source of the tagged commit |
+| any | `SHA256SUMS.txt` | release workflow (checksums job) | hashes of every attached file |
 
 ## Prerequisites
 
@@ -153,9 +141,16 @@ scripts/release.sh 0.1.0           # tag + push + gh release create
 gh release view v0.1.0 --json assets,url
 ```
 
+When the release asset upload is not reachable (this development sandbox blocks
+`uploads.github.com`), the workflow does it instead: it runs on GitHub's runners,
+builds the same artifacts for both platforms and attaches them with
+`gh release upload`. `scripts/release.sh` therefore only needs to create the
+release and push the tag; the assets arrive on the next workflow run.
+
 The published release is
 [v0.1.0](https://github.com/ankitkumar131/pdf-rust/releases/tag/v0.1.0) with notes
-in [`docs/release-0.1.0.md`](release-0.1.0.md).
+in [`docs/release-0.1.0.md`](release-0.1.0.md): Windows installer and portable
+ZIP, Debian package, AppImage, Linux tarball and a single `SHA256SUMS.txt`.
 
 ## Verifying a package
 

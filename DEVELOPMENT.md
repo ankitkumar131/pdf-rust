@@ -56,10 +56,16 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
   `../lib/pdf-rust/libpdfium.so` search path.
 * `--selftest` fails fast with the list of paths it tried when PDFium is missing
   (previously it waited two minutes and then reported only a timeout).
-* Release `v0.1.0` is published with the `.deb`, portable tarball and source
-  linked from the description; the binaries live in `downloads/v0.1.0/` inside the
-  tag because this environment cannot reach `uploads.github.com`, so
-  `gh release upload` fails (the script warns and continues).
+* Release `v0.1.0` is published with **Windows and Linux binaries attached as
+  release assets**: `pdf-rust-0.1.0-setup.exe` (NSIS), `pdf-rust-0.1.0-win64.zip`,
+  `pdf-rust_0.1.0_amd64.deb`, `pdf-rust-0.1.0-x86_64.AppImage`,
+  `pdf-rust-0.1.0-linux-x86_64.tar.gz` and one `SHA256SUMS.txt`. This sandbox
+  cannot reach `uploads.github.com`, so the upload is done by
+  `.github/workflows/release.yml` on GitHub's runners (Linux job + Windows job +
+  a checksums job that collects both). Run
+  `gh run list --workflow "Release artifacts"` to see it.
+* The Windows binaries were produced by that workflow; the interactive parts still
+  need a hands-on check on real Windows hardware (see limitations).
 * PDF engine: 20-page and 1000-page documents, zoom 2×, 90° rotation, text
   extraction, search, outline, links, password-protected and corrupt files,
   rotated-copy export that provably leaves the original untouched.
@@ -78,7 +84,7 @@ each one is verified today:
 | Zoom and rotation persist | met | session row stores zoom mode/value, rotation and view mode; covered by `reading_position_survives_restart` and `settings_round_trip_through_the_database` |
 | Large PDFs read without excessive memory | met | 1000-page engine test; bounded cache (192 MB, never evicts the visible page) + 8192 px/40 MP clamps; `extended_reading_keeps_the_cache_bounded`; `--selftest` reports 17.8 MB peak on the 200-page benchmark |
 | Multiple PDFs open | met | tabs (`tabs_and_single_page_mode`), tab bar, drag & drop of a second file |
-| Windows installer and portable distribution work | **unverified** | NSIS + ZIP scripts are complete; needs one run on Windows (see limitations) |
+| Windows installer and portable distribution work | built by CI, **not hand-tested** | `.github/workflows/release.yml` builds `pdf-rust-0.1.0-setup.exe` and `pdf-rust-0.1.0-win64.zip` on `windows-latest` and attaches them to the release; installation itself needs a Windows machine (see limitations) |
 | Linux package works | met (packages built and inspected; install not performed here) | `.deb` built with `dpkg-deb`, AppDir runs in place (`AppRun --selftest`) |
 | Recognised as a PDF reader by both systems | met on Linux, scripted on Windows | `application/pdf` MIME + desktop entry + AppStream; Windows ProgID + `OpenWithProgids` + `Applications` entry |
 | Critical features have automated or documented manual tests | met | 146 automated tests plus the manual matrix in `docs/testing.md` |

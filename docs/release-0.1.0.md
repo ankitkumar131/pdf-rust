@@ -9,39 +9,60 @@ and reading mode, per document, across restarts and reboots.
 
 ## Download
 
-Binaries are published in this tag under `downloads/v0.1.0/` and linked directly
-below; the source archives are the ones GitHub generates for the tag.
+Windows and Linux binaries are attached to this release; every file is covered by
+[SHA256SUMS.txt](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/SHA256SUMS.txt).
 
-| Artifact | Platform | Size | Direct download |
+### Windows 10 / 11 (x64)
+
+| Package | Size | Direct download |
+| --- | --- | --- |
+| Installer (adds shortcuts, uninstaller, *Open with pdf-rust*) | 2.99 MB | [pdf-rust-0.1.0-setup.exe](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust-0.1.0-setup.exe) |
+| Portable ZIP (unpack and run, no install) | 3.78 MB | [pdf-rust-0.1.0-win64.zip](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust-0.1.0-win64.zip) |
+
+### Linux (x86-64)
+
+| Package | Distribution | Size | Direct download |
 | --- | --- | --- | --- |
-| `.deb` package | Debian / Ubuntu / Zorin, x86-64 | 3.3 MB | [pdf-rust_0.1.0_amd64.deb](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/pdf-rust_0.1.0_amd64.deb) |
-| Portable tarball | any Linux x86-64 (glibc ≥ 2.31) | 4.2 MB | [pdf-rust-0.1.0-linux-x86_64.tar.gz](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/pdf-rust-0.1.0-linux-x86_64.tar.gz) |
-| Checksums | — | 196 B | [SHA256SUMS.txt](https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/SHA256SUMS.txt) |
-| Source archive | — | 663 KB | [pdf-rust-0.1.0-src.tar.gz](https://github.com/ankitkumar131/pdf-rust/archive/refs/tags/v0.1.0.tar.gz) |
+| `.deb` | Debian, Ubuntu, Zorin | 2.89 MB | [pdf-rust_0.1.0_amd64.deb](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust_0.1.0_amd64.deb) |
+| AppImage | any distribution, no install | 4.40 MB | [pdf-rust-0.1.0-x86_64.AppImage](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust-0.1.0-x86_64.AppImage) |
+| Portable tarball | any distribution (glibc ≥ 2.31) | 3.71 MB | [pdf-rust-0.1.0-linux-x86_64.tar.gz](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/pdf-rust-0.1.0-linux-x86_64.tar.gz) |
+
+### Source
+
+| | Size | Direct download |
+| --- | --- | --- |
+| Source archive (tag `v0.1.0`) | 663 KB | [pdf-rust-0.1.0-src.tar.gz](https://github.com/ankitkumar131/pdf-rust/archive/refs/tags/v0.1.0.tar.gz) |
+| Checksums | 649 B | [SHA256SUMS.txt](https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/SHA256SUMS.txt) |
 
 ```bash
-# verify what you downloaded
-curl -LO https://github.com/ankitkumar131/pdf-rust/raw/v0.1.0/downloads/v0.1.0/SHA256SUMS.txt
+# verify every download at once
+curl -LO https://github.com/ankitkumar131/pdf-rust/releases/download/v0.1.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 ```
 
-```
-8835e65ff147bb5a61faaeb6d2168ac2186815226dc1eecdf4be6959f91c92e0  pdf-rust_0.1.0_amd64.deb
-765a67538acf6d6cd81b9ccb0361c89cb2ade6ce18dc71dc428fd964b8f13d6b  pdf-rust-0.1.0-linux-x86_64.tar.gz
-```
-
-PDFium (the renderer) is bundled in both packages — nothing else to install.
-
-> **Windows:** the Windows build is produced on Windows, because it needs the
-> Windows resource compiler and `pdfium.dll`. Run
-> `powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1` in a
-> checkout of this tag; it creates `dist\pdf-rust-0.1.0-win64.zip` and, when NSIS
-> is installed, `dist\pdf-rust-0.1.0-setup.exe`. No Windows binary or installer is
-> attached to this release yet.
+All packages bundle PDFium 152.0.7934 — no separate renderer install, no
+`LD_LIBRARY_PATH`, no GTK/Qt, no web view.
 
 ## Install
 
-**Debian / Ubuntu / Zorin**
+**Windows — installer**
+
+Download `pdf-rust-0.1.0-setup.exe` and run it. It installs into
+`%ProgramFiles%\pdf-rust`, adds Start Menu (and optionally desktop) shortcuts, an
+uninstaller, and an optional *Open PDF files with pdf-rust* component that
+registers the app under *Open with* so it can be chosen as the default PDF
+application.
+
+**Windows — portable**
+
+```powershell
+Expand-Archive pdf-rust-0.1.0-win64.zip -DestinationPath "$env:LOCALAPPDATA\pdf-rust"
+& "$env:LOCALAPPDATA\pdf-rust\pdf-rust.exe" document.pdf
+```
+
+`pdfium.dll` sits next to the executable; nothing else is needed.
+
+**Linux — Debian / Ubuntu / Zorin**
 
 ```bash
 sudo dpkg -i pdf-rust_0.1.0_amd64.deb
@@ -54,7 +75,14 @@ The package installs `/usr/bin/pdf-rust`, ships PDFium in
 MIME type and AppStream metadata — pdf-rust appears in *Open with* and can be
 chosen as the default PDF application.
 
-**Portable**
+**Linux — AppImage**
+
+```bash
+chmod +x pdf-rust-0.1.0-x86_64.AppImage
+./pdf-rust-0.1.0-x86_64.AppImage document.pdf
+```
+
+**Linux — portable tarball**
 
 ```bash
 tar -xzf pdf-rust-0.1.0-linux-x86_64.tar.gz
@@ -126,9 +154,10 @@ text selection     ready
 
 ## Known limitations
 
-* Linux only in this release's binaries; the Windows shell, installer and
-  portable ZIP scripts are in the tree and type-checked on Linux
-  (`cargo check --features win32-syntax-check`) but have not been run on Windows.
+* The Windows binaries are built by the release workflow on Windows and the
+  installer compiles cleanly, but the interactive parts (window, DPI scaling,
+  clipboard, `Ctrl+P` printing, file associations) have not been verified by hand
+  on Windows hardware yet — please report anything that misbehaves.
 * The UI text has no hinting (slightly softer at 11 px) and no complex-script
   shaping; CJK appears as boxes in the chrome only — document text is rendered by
   PDFium and is unaffected.

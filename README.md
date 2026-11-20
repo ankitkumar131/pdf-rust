@@ -72,28 +72,18 @@ Release builds use fat LTO, one codegen unit, `panic=abort` and symbol stripping
 
 ## Install
 
-Prebuilt packages are produced by the scripts in [`packaging/`](packaging); see
-[`docs/packaging.md`](docs/packaging.md) for the full description.
+Prebuilt binaries for both platforms are attached to the
+[latest release](https://github.com/ankitkumar131/pdf-rust/releases/latest):
 
-* **Linux** — the newest release is downloadable from
-  [Releases](https://github.com/ankitkumar131/pdf-rust/releases/latest) (`.deb`,
-  portable tarball, source). Building locally: `scripts/build-release.sh` produces
-  `dist/pdf-rust_<version>_amd64.deb`, a portable tarball and the AppDir/AppImage.
-  The package installs
-  `/usr/bin/pdf-rust`, ships PDFium in `/usr/lib/pdf-rust/`, registers
-  `application/pdf` (desktop entry, MIME XML, AppStream metainfo, icon) and
-  refreshes the caches from `postinst`.
+| Platform | Packages |
+| --- | --- |
+| Windows 10/11 x64 | `pdf-rust-<version>-setup.exe` (installer with shortcuts, uninstaller and an optional *Open with pdf-rust* association) · `pdf-rust-<version>-win64.zip` (portable) |
+| Linux x86-64 | `pdf-rust_<version>_amd64.deb` (Debian/Ubuntu/Zorin) · `pdf-rust-<version>-x86_64.AppImage` · `pdf-rust-<version>-linux-x86_64.tar.gz` (portable) |
 
-  ```bash
-  sudo dpkg -i dist/pdf-rust_0.1.0_amd64.deb
-  ```
-
-* **Windows** — `packaging\windows\build.ps1` runs the tests, builds the release
-  binary, and produces `dist/pdf-rust-<version>-win64.zip` plus an NSIS installer
-  (`makensis` required for the installer). The installer offers Start Menu and
-  desktop shortcuts and an optional "Open PDF files with pdf-rust" association,
-  and the executable carries the icon, version stamp and a per-monitor-DPI
-  manifest.
+All of them bundle PDFium and are covered by a `SHA256SUMS.txt` attached to the
+same release. The packages were built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+on GitHub's runners; see [`docs/packaging.md`](docs/packaging.md) for what each one
+installs and how to build them yourself.
 
 ## Usage
 
