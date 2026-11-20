@@ -33,9 +33,3 @@
 .idea/
 .vscode/
 *.swp
-
-# Prebuilt binaries published with the release notes. Release-asset uploads are
-# not reachable from every build environment, so the release links to these files
-# in the tagged tree instead (see docs/packaging.md).
-!downloads/v0.1.0/*.deb
-!downloads/v0.1.0/*.tar.gz

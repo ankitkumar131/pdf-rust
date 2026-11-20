@@ -1,2 +1,0 @@
-8835e65ff147bb5a61faaeb6d2168ac2186815226dc1eecdf4be6959f91c92e0  ./pdf-rust_0.1.0_amd64.deb
-765a67538acf6d6cd81b9ccb0361c89cb2ade6ce18dc71dc428fd964b8f13d6b  ./pdf-rust-0.1.0-linux-x86_64.tar.gz

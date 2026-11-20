@@ -23,20 +23,6 @@ repo="ankitkumar131/pdf-rust"
 # Refresh the checksums so they always match what is uploaded.
 (cd dist && sha256sum ./*.deb ./*.tar.gz ./*.AppImage 2>/dev/null > SHA256SUMS.txt || true)
 
-# Publish the binaries inside the tagged tree as well: release-asset uploads go
-# to uploads.github.com, which some build environments cannot reach.
-downloads="downloads/v$version"
-mkdir -p "$downloads"
-for file in "pdf-rust_${version}_amd64.deb" "pdf-rust-${version}-linux-x86_64.tar.gz"; do
-  [ -f "dist/$file" ] || { echo "error: dist/$file is missing" >&2; exit 1; }
-  cp -f "dist/$file" "$downloads/$file"
-done
-(cd "$downloads" && sha256sum ./*.deb ./*.tar.gz > SHA256SUMS.txt)
-git add -f "$downloads"
-if ! git diff --cached --quiet; then
-  git commit -q -m "chore(release): publish $version binaries under $downloads"
-fi
-
 assets=(
   "dist/pdf-rust_${version}_amd64.deb"
   "dist/pdf-rust-${version}-linux-x86_64.tar.gz"
@@ -67,11 +53,13 @@ else
     --notes-file "$notes" ${draft:+--draft}
 fi
 
-# Attaching assets needs uploads.github.com; keep going if it is unreachable,
-# the notes link to $downloads inside the tag instead.
+# Attaching assets needs uploads.github.com, which not every environment can
+# reach. The Release artifacts workflow builds the same files on GitHub's runners
+# (including the Windows ZIP and installer) and attaches them, so a failure here
+# only means "wait for CI".
 if ! gh release upload "$tag" "${assets[@]}" --repo "$repo" --clobber; then
-  echo "warning: could not upload release assets (uploads.github.com unreachable)." >&2
-  echo "         The binaries are published under $downloads in the tag." >&2
+  echo "note: direct asset upload failed (uploads.github.com); the Release" >&2
+  echo "      artifacts workflow attaches the same files from a GitHub runner." >&2
 fi
 gh release view "$tag" --repo "$repo" --json url,assets \
   -q '.url, (.assets[] | "  \(.name)  \(.size) bytes  \(.url)")'

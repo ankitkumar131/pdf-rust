@@ -63,7 +63,8 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
   cannot reach `uploads.github.com`, so the upload is done by
   `.github/workflows/release.yml` on GitHub's runners (Linux job + Windows job +
   a checksums job that collects both). Run
-  `gh run list --workflow "Release artifacts"` to see it.
+  `gh run list --workflow "Release artifacts"` to see it. Binaries are no longer
+  committed to the tree.
 * The Windows binaries were produced by that workflow; the interactive parts still
   need a hands-on check on real Windows hardware (see limitations).
 * PDF engine: 20-page and 1000-page documents, zoom 2×, 90° rotation, text

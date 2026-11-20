@@ -141,11 +141,13 @@ scripts/release.sh 0.1.0           # tag + push + gh release create
 gh release view v0.1.0 --json assets,url
 ```
 
-When the release asset upload is not reachable (this development sandbox blocks
-`uploads.github.com`), the workflow does it instead: it runs on GitHub's runners,
-builds the same artifacts for both platforms and attaches them with
-`gh release upload`. `scripts/release.sh` therefore only needs to create the
-release and push the tag; the assets arrive on the next workflow run.
+Asset uploads go to `uploads.github.com`, which this development sandbox cannot
+reach; the `Release artifacts` workflow runs on GitHub's runners instead, builds
+the same artifacts for both platforms (including the Windows ZIP and installer,
+which need a Windows host) and attaches them with `gh release upload`.
+`scripts/release.sh` therefore only creates the release and pushes the tag — the
+assets arrive on the next workflow run, and the checksums job then replaces
+`SHA256SUMS.txt` with one file covering everything that was attached.
 
 The published release is
 [v0.1.0](https://github.com/ankitkumar131/pdf-rust/releases/tag/v0.1.0) with notes
