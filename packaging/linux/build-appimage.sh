@@ -51,7 +51,7 @@ for candidate in appimagetool linuxdeploy; do
 done
 if [ -z "$tool" ]; then
   echo "AppDir ready: $appdir"
-  echo "appimagetool not found; run: ARCH=x86_64 appimagetool $appdir dist/pdf-rust.AppImage" >&2
+  echo "appimagetool not found; run: ARCH=x86_64 appimagetool $appdir dist/pdf-rust-${version}-x86_64.AppImage" >&2
   exit 0
 fi
 out="$root/dist/pdf-rust-${version}-x86_64.AppImage"
