@@ -730,10 +730,11 @@ fn present(shell: &mut Shell, hdc: Hdc, hwnd: Hwnd) {
     } else {
         (bmp.width as i32, bmp.height as i32)
     };
-    if have_client && cx > bmp.width as i32 {
-        // Fill the sliver the bitmap does not cover with the theme background.
-        let strip = Rect32 {
-            left: bmp.width as i32,
+    if have_client && (cx > bmp.width as i32 || cy > bmp.height as i32) {
+        // The client area grew since the last frame: paint the whole client area
+        // with the theme background first so the uncovered strip is not stale.
+        let area = Rect32 {
+            left: 0,
             top: 0,
             right: cx,
             bottom: cy,
@@ -741,7 +742,7 @@ fn present(shell: &mut Shell, hdc: Hdc, hwnd: Hwnd) {
         if !shell.brush.is_null() {
             // SAFETY: brush and device context are valid; the rect is local.
             unsafe {
-                FillRect(hdc, &strip, shell.brush);
+                FillRect(hdc, &area, shell.brush);
             }
         }
     }
