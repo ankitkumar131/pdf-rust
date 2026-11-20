@@ -35,7 +35,19 @@ jobs:
         run: cargo build --offline --release
 
       - name: Test
-        run: cargo test --offline --release
+        run: |
+          # Surface failing tests as annotations: the job log is not always
+          # accessible, annotations are.
+          set -o pipefail
+          cargo test --offline --release 2>&1 | tee tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E 'FAILED|panicked at|^error' tests.log | head -20 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            tail -40 tests.log
+            exit 1
+          fi
 
       - name: Type-check the Win32 shell
         run: cargo check --offline --features win32-syntax-check
