@@ -14,6 +14,7 @@ use pdf_rust::db::{Database, ReadingMode, ZoomMode};
 use pdf_rust::geom::{Point, Rect, Size};
 use pdf_rust::pdf::Engine;
 use pdf_rust::ui::{Bitmap, Font, Input, Key, KeyEvent};
+use std::sync::Arc;
 
 fn font() -> Font {
     Font::ui()
@@ -785,6 +786,20 @@ fn one_global_budget_covers_every_document() {
         assert!(stats.documents.iter().any(|d| d.active && d.pages > 0));
     }
 
+    // The policy has to be exercised deterministically: rendering is
+    // asynchronous, so fill both caches by hand and then let the app enforce the
+    // global budget. 40 pages of 4 MB each is 160 MB in a 64 MiB budget.
+    for doc in &mut app.docs {
+        doc.cache.clear();
+    }
+    for doc in app.docs.iter_mut() {
+        for page in 0..20u32 {
+            let key = pdf_rust::pdf::RenderKey::new(page, 1.0, 0);
+            doc.cache.insert(key, Arc::new(Bitmap::new(1000, 1000)));
+        }
+    }
+    let before = app.memory_stats();
+    assert!(before.used > budget, "the test needs to start over budget");
     app.enforce_cache_budget();
     let stats = app.memory_stats();
     assert_eq!(stats.budget, budget);
@@ -795,19 +810,32 @@ fn one_global_budget_covers_every_document() {
         budget
     );
     assert!(stats.pages > 0, "the visible page is still cached");
+    assert!(stats.evictions > 0, "pages were evicted to stay inside it");
+    // The background document was trimmed first: only the page it was left on
+    // and the most recent one can survive (`trim_to` protects both).
+    assert!(
+        app.docs[1].cache.len() <= 2,
+        "background document kept {} pages",
+        app.docs[1].cache.len()
+    );
+    assert!(
+        app.docs[1].cache.memory_bytes() <= 2 * 4 * 1024 * 1024,
+        "background document kept {} bytes",
+        app.docs[1].cache.memory_bytes()
+    );
     // The page the user is looking at is never thrown away.
     assert!(!app.docs[0].cache.is_empty());
-    // The background document was trimmed first.
     assert!(
-        app.docs[1].cache.len() <= app.docs[0].cache.len(),
-        "background document kept {} pages, active kept {}",
-        app.docs[1].cache.len(),
-        app.docs[0].cache.len()
+        app.docs[0].cache.len() >= app.docs[1].cache.len(),
+        "active kept {} pages, background {}",
+        app.docs[0].cache.len(),
+        app.docs[1].cache.len()
     );
     // Switching back to the background document still renders.
     app.frame(&press(Key::Tab, true, false), &mut bmp, &f);
+    app.docs[1].cache.clear();
     assert!(pump(&mut app, &mut bmp, &f, |app| {
-        app.active == 1 && app.docs[1].cache.len() > 0
+        app.active == 1 && !app.docs[1].cache.is_empty()
     }));
     // Raising the budget again is possible at runtime.
     app.set_cache_budget(512 * 1024 * 1024);
