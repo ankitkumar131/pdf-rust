@@ -127,6 +127,17 @@ fn selftest(options: &Options) -> Result<(), String> {
     use pdf_rust::ui::{Bitmap, Font, Input};
 
     let started = Instant::now();
+    if !pdf_rust::pdf::ffi::available() {
+        let tried: Vec<String> = pdf_rust::pdf::ffi::search_paths()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        return Err(format!(
+            "PDFium was not found. Put libpdfium.so / pdfium.dll next to the executable, \
+             in ./runtime/pdfium, or set PDFRUST_PDFIUM.\n  tried: {}",
+            tried.join(", ")
+        ));
+    }
     let engine = Engine::start();
     let (db, db_error) = open_database(options);
     let mut app = App::new(engine, db, db_error);
@@ -143,7 +154,7 @@ fn selftest(options: &Options) -> Result<(), String> {
     if let Some(path) = options.docs.first() {
         app.open_path(path.clone(), None);
         let open_started = Instant::now();
-        let deadline = Instant::now() + std::time::Duration::from_secs(120);
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
         while Instant::now() < deadline {
             app.tick(app.now());
             app.frame(&input, &mut bmp, &font);
@@ -162,7 +173,15 @@ fn selftest(options: &Options) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         if rendered_ms.is_nan() {
-            return Err("timed out waiting for the first page".to_string());
+            let status = app
+                .active_doc()
+                .map(|d| format!("ready={} pages={}", d.is_ready(), d.page_count()))
+                .unwrap_or_else(|| "no document".to_string());
+            return Err(format!(
+                "timed out waiting for the first page ({status}); \
+                 is {} readable and a valid PDF?",
+                path.display()
+            ));
         }
         // Give the worker a moment to finish the visible pages, then measure a
         // steady-state frame.
@@ -198,6 +217,17 @@ fn run(options: Options) -> Result<(), String> {
         return selftest(&options);
     }
     let started = Instant::now();
+    if !pdf_rust::pdf::ffi::available() {
+        let tried: Vec<String> = pdf_rust::pdf::ffi::search_paths()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        return Err(format!(
+            "PDFium was not found. Put libpdfium.so / pdfium.dll next to the executable, \
+             in ./runtime/pdfium, or set PDFRUST_PDFIUM.\n  tried: {}",
+            tried.join(", ")
+        ));
+    }
     let engine = Engine::start();
     if let Some(err) = &engine.init_error {
         eprintln!("pdf-rust: warning: {}", err);

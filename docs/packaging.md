@@ -14,8 +14,20 @@ generated. The rationale is in [ADR 0006](adr/0006-packaging.md).
 | Windows | `dist/pdf-rust-<version>-setup.exe` | `packaging/windows/build.ps1` + NSIS | installer with shortcuts, uninstaller and optional `.pdf` association |
 | any | `dist/SHA256SUMS.txt` | `scripts/build-release.sh` | checksums of the Linux artifacts |
 
-Measured on the development machine: the executable is ~1.7 MB (stripped, fat
-LTO), PDFium ~7.3 MB, the `.deb` ~3.3 MB after `xz` compression.
+### Sizes (Linux x86-64, release build, PDFium 152.0.7934)
+
+| Item | Size |
+| --- | --- |
+| `pdf-rust` executable (stripped, fat LTO) | 1.71 MB |
+| `libpdfium.so` | 7.62 MB |
+| `.deb` download | 3.3 MB |
+| `.deb` installed (`dpkg-deb -I` *Installed-Size*) | 9.1 MB |
+| AppDir (uncompressed, before squashfs) | 9.3 MB |
+
+The Windows artifacts are not measured here (no Windows machine in the sandbox);
+expect a similar split — ~1.7 MB executable plus ~8 MB `pdfium.dll`, and a
+portable ZIP of roughly 4 MB thanks to `lzma` in the installer and deflate in the
+ZIP.
 
 ## Prerequisites
 
@@ -124,8 +136,16 @@ dpkg-deb -c dist/pdf-rust_0.1.0_amd64.deb     # file list and modes
 dpkg-deb -x dist/pdf-rust_0.1.0_amd64.deb /tmp/pkg && /tmp/pkg/usr/bin/pdf-rust --version
 ```
 
-The AppDir can be run in place: `dist/pdf-rust.AppDir/AppRun --selftest` should
-report a rendered page without any environment setup. On Windows, install into a
+The AppDir can be run in place: `dist/pdf-rust.AppDir/AppRun --selftest` reports a
+rendered page without any environment setup. The `.deb` layout can be checked the
+same way without installing:
+
+```bash
+dpkg-deb -x dist/pdf-rust_0.1.0_amd64.deb /tmp/pkgroot
+env -u LD_LIBRARY_PATH -u PDFRUST_PDFIUM /tmp/pkgroot/usr/bin/pdf-rust --selftest doc.pdf
+```
+
+This exercises the `../lib/pdf-rust/` lookup the installed package relies on. On Windows, install into a
 scratch VM, double-click a `.pdf`, and check *Settings → Apps* lists pdf-rust with
 its icon before uninstalling.
 

@@ -52,9 +52,17 @@ the first page is rendered, and returns the app. Tests then:
 * type into the go-to-page field and assert focus handling (this is where the
   focus-leak bug was caught: a dialog field must lose focus when the dialog
   closes or the user presses elsewhere),
+* reopen the same file after a simulated restart and check page, scroll offset,
+  zoom and rotation are restored (`reading_position_survives_restart`), that a
+  moved/renamed file keeps its position (`moving_a_file_keeps_its_reading_position`)
+  and that "start from the beginning" in the resume dialog forgets it
+  (`resume_prompt_can_start_over`),
 * drag a text selection and copy it, checking the clipboard payload,
 * run search and step through hits, checking the page changes and highlights are
-  laid out in PDF space,
+  laid out in PDF space, and round-trip a highlight through the database
+  (`highlight_round_trips_through_the_database`),
+* open several documents into tabs, switch between them and check that each keeps
+  its own page (`tabs_and_single_page_mode`),
 * paint frames and check pixels (for example that the page content region is not
   uniform, that the selection overlay changes the frame, that the toast appears
   and expires).
@@ -106,6 +114,8 @@ document           200 pages
 text selection     ready
 ```
 
+If PDFium cannot be found, `--selftest` exits immediately (status 1) and prints
+every path it tried instead of waiting for a render that will never come.
 `scripts/bench.sh` regenerates the fixture and runs the selftest three times.
 `PDFRUST_STATS=1` (or `--stats`) prints startup time and peak memory to stderr
 on exit; useful in a shell loop or under `/usr/bin/time`.

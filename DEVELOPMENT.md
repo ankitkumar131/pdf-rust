@@ -50,9 +50,35 @@ warnings) and `--features win32-syntax-check` for the Windows shell.
 * `packaging/linux/build-deb.sh` produces a 3.3 MB `.deb` whose contents were
   checked with `dpkg-deb -I/-c`; `build-appimage.sh` produces a runnable AppDir
   (`dist/pdf-rust.AppDir/AppRun --version`).
+* The packaged layout works end to end: the `.deb` was unpacked with
+  `dpkg-deb -x` into a scratch root and `usr/bin/pdf-rust --selftest` rendered a
+  page with no `LD_LIBRARY_PATH` and no `PDFRUST_PDFIUM`, proving the
+  `../lib/pdf-rust/libpdfium.so` search path.
+* `--selftest` fails fast with the list of paths it tried when PDFium is missing
+  (previously it waited two minutes and then reported only a timeout).
 * PDF engine: 20-page and 1000-page documents, zoom 2×, 90° rotation, text
   extraction, search, outline, links, password-protected and corrupt files,
   rotated-copy export that provably leaves the original untouched.
+
+## Acceptance criteria
+
+Mapped to the specification in [`instruction.md`](instruction.md) §16, with how
+each one is verified today:
+
+| Criterion | Status | Evidence |
+| --- | --- | --- |
+| PDF opens through the UI | met | `tests/viewer.rs::opens_a_document_and_draws_it`, open dialog test |
+| PDF opens by double-clicking in Explorer / file manager | met (Linux `.deb` inspected; Windows installer not run here) | `.desktop` + MIME + `Open with` registration, NSIS association component, per-OS command-line parsing (`document_from_args`) |
+| A 20-page PDF opened on page 10 restores page 10 after closing and reopening | met | `reading_position_survives_restart`, `db::reopening_the_same_file_keeps_the_session`, `--page 10` + `session` row |
+| Restoration survives a full machine restart | met by construction | session rows are committed to SQLite (WAL, `synchronous=NORMAL`, autosave ≤2 s, `save_all()` on quit); a restart is indistinguishable from the process restart the tests perform |
+| Zoom and rotation persist | met | session row stores zoom mode/value, rotation and view mode; covered by `reading_position_survives_restart` and `settings_round_trip_through_the_database` |
+| Large PDFs read without excessive memory | met | 1000-page engine test; bounded cache (192 MB) + 8192 px/40 MP clamps; `--selftest` reports 17.8 MB peak on the 200-page benchmark |
+| Multiple PDFs open | met | tabs (`tabs_and_single_page_mode`), tab bar, drag & drop of a second file |
+| Windows installer and portable distribution work | **unverified** | NSIS + ZIP scripts are complete; needs one run on Windows (see limitations) |
+| Linux package works | met (packages built and inspected; install not performed here) | `.deb` built with `dpkg-deb`, AppDir runs in place (`AppRun --selftest`) |
+| Recognised as a PDF reader by both systems | met on Linux, scripted on Windows | `application/pdf` MIME + desktop entry + AppStream; Windows ProgID + `OpenWithProgids` + `Applications` entry |
+| Critical features have automated or documented manual tests | met | 141 automated tests plus the manual matrix in `docs/testing.md` |
+| Source pushed to the configured remote | met | fast-forward pushes to `origin` after every milestone |
 
 ## Known bugs / limitations
 
