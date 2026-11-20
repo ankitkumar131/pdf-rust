@@ -19,7 +19,8 @@
 param(
     [string] $Version = "",
     [string] $PdfiumDll = "",
-    [switch] $SkipTests
+    [switch] $SkipTests,
+    [switch] $SkipInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,7 +68,9 @@ try {
     Write-Host "==> $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 2)) MB)"
 
     $makensis = Get-Command makensis -ErrorAction SilentlyContinue
-    if ($makensis) {
+    if ($SkipInstaller) {
+        Write-Host "installer skipped (-SkipInstaller)"
+    } elseif ($makensis) {
         Write-Host "==> makensis"
         & $makensis.Source `
             "/DAPP_VERSION=$Version" `

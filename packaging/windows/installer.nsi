@@ -11,6 +11,7 @@ Unicode true
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
+!include "x64.nsh"
 
 !ifndef APP_VERSION
   !define APP_VERSION "0.1.0"

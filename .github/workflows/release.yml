@@ -138,9 +138,24 @@ jobs:
             Write-Output "NSIS not installed; the installer step will be skipped"
           }
 
-      - name: Build and package
+      - name: Build and package (portable ZIP)
         shell: pwsh
-        run: ./packaging/windows/build.ps1 -SkipTests -PdfiumDll runtime/pdfium/pdfium.dll
+        run: ./packaging/windows/build.ps1 -SkipTests -SkipInstaller -PdfiumDll runtime/pdfium/pdfium.dll
+
+      - name: Build the NSIS installer
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+          if (-not $makensis) { throw "makensis is not available" }
+          & $makensis.Source `
+            "/DAPP_VERSION=$version" `
+            "/DSOURCE_DIR=$PWD\target\release" `
+            "/DPDFIUM_DLL=$PWD\runtime\pdfium\pdfium.dll" `
+            "$PWD\packaging\windows\installer.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
+          Get-ChildItem dist | Select-Object Name, Length
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
